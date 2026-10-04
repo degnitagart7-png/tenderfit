@@ -1,0 +1,270 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+  Светлая тема ТендерФит.
+
+  Референс — дашборд Orbit CRM (Akmal, Uxerflow): тёплая почти-белая подложка,
+  белые карточки с тонкой тёплой границей, крупный мягкий радиус, кнопки-пилюли
+  и один тёплый оранжевый акцент вместо холодного indigo. Индиго ушёл намеренно:
+  сине-фиолетовый акцент — дежурный цвет любого сгенерированного интерфейса, и
+  на нём продукт не отличается от соседнего.
+
+  Переменные заданы тройками RGB, чтобы Tailwind применял модификаторы
+  прозрачности (rgb(var(--x) / <alpha-value>)).
+
+  Контраст: все токены текста проверены на WCAG AA (>= 4.5:1) на подложках, где
+  реально печатаются. Оранжевый разведён на три значения, потому что один и тот
+  же оранжевый не может одновременно быть ярким пятном и проходить AA:
+  --accent красит графику (полосы, иконки, маркеры), --accent-strong заливает
+  кнопки под белый текст (4.6:1), --accent-fg печатает мелкий текст и ссылки
+  на белом (5.2:1).
+*/
+:root {
+  color-scheme: light;
+
+  /* Подложки — тёплый нейтральный ряд, а не холодный серо-синий. */
+  --background: 246 246 244; /* #F6F6F4 — холст приложения */
+  --panel: 255 255 255; /* #FFFFFF — карточки и панели */
+  --panel-raised: 245 244 241; /* #F5F4F1 — шапки таблиц, ховер строк, чипы */
+  --sidebar: 250 250 248; /* #FAFAF8 — боковое меню: чуть глуше контента */
+
+  /* Границы и текст */
+  --border: 233 231 227; /* #E9E7E3 */
+  --border-strong: 214 211 205; /* #D6D3CD — акцентные разделители */
+  --foreground: 26 24 22; /* #1A1816 — тёплый почти-чёрный */
+  --ink-soft: 60 57 53; /* #3C3935 — длинные документы (10.6:1 на белом) */
+  /*
+    Вторичный и третичный тон подняты по контрасту на один шаг: было 5.3:1 и
+    4.6:1 — формально выше порога AA для обычного текста, но этим тоном набрана
+    большая часть карточек ленты, а не подписи под ними. На ноутбучном экране
+    при дневном свете такой текст читается как блёклый.
+  */
+  --muted-foreground: 85 81 75; /* #55514B — вторичный (7.4:1) */
+  --faint: 108 104 98; /* #6C6862 — третичный и плейсхолдеры (5.3:1) */
+
+  /* Тёмная заливка: чекбоксы, панель массового действия, тултипы. */
+  --ink: 28 25 23; /* #1C1917 */
+
+  /* Акцент — оранжевый Orbit. */
+  --accent: 242 84 27; /* #F2541B — графика, маркеры, иконки, логотип */
+  --accent-strong: 209 67 17; /* #D14311 — заливка кнопок (белый текст, 4.6:1) */
+  --accent-hover: 179 56 13; /* #B3380D — ховер залитой кнопки */
+  --accent-fg: 194 65 12; /* #C2410C — мелкий текст и ссылки (5.2:1) */
+  --accent-subtle: 255 241 235; /* #FFF1EB — подложка активных элементов */
+  --accent-line: 254 215 196; /* #FED7C4 — граница по подложке акцента */
+
+  /*
+    Семантика вердикта. Оранжевый акцент стоит между жёлтым и красным, поэтому
+    предупреждение уведено в золото (не оранжевый), а опасность — в чистый
+    красный. Плюс вердикт всегда несёт иконку: цвет не единственный носитель
+    смысла (WCAG 1.4.1).
+  */
+  --olive: 6 118 71; /* #067647 — успех: рекомендовано */
+  --olive-fg: 4 102 61; /* #04663D */
+  --olive-subtle: 236 253 243; /* #ECFDF3 */
+  --olive-line: 171 239 198; /* #ABEFC6 */
+
+  --mustard: 202 138 4; /* #CA8A04 — золото: ручная проверка */
+  --mustard-fg: 133 77 14; /* #854D0E */
+  --mustard-subtle: 255 250 232; /* #FFFAE8 */
+  --mustard-line: 250 229 165; /* #FAE5A5 */
+
+  --brick: 217 45 32; /* #D92D20 — опасность: риск и отказ */
+  --brick-fg: 180 35 24; /* #B42318 */
+  --brick-subtle: 254 243 242; /* #FEF3F2 */
+  --brick-line: 254 205 202; /* #FECDCA */
+
+  /* Тени: очень мягкие и тёплые — карточка приподнята, а не вырезана. */
+  --card-shadow: 0 1px 2px rgb(28 25 23 / 0.04), 0 1px 3px rgb(28 25 23 / 0.03);
+  --card-shadow-hover: 0 2px 4px rgb(28 25 23 / 0.06), 0 8px 20px rgb(28 25 23 / 0.06);
+  /* Активный пункт меню: белая пилюля, оторванная от подложки сайдбара. */
+  --pill-shadow: 0 1px 2px rgb(28 25 23 / 0.06), 0 1px 1px rgb(28 25 23 / 0.04);
+}
+
+html,
+body {
+  padding: 0;
+  margin: 0;
+  background-color: rgb(var(--background));
+  color: rgb(var(--foreground));
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+@layer components {
+  /* Панель: тонкая тёплая граница, крупный радиус 16px, мягкая тень. */
+  .card {
+    @apply bg-panel border border-border rounded-card;
+    box-shadow: var(--card-shadow);
+  }
+
+  /* Микро-подпись над полем и над секцией меню. */
+  .label {
+    @apply block text-[12.5px] font-semibold uppercase tracking-[0.07em] text-faint mb-1.5;
+  }
+
+  .input {
+    @apply w-full rounded-control border border-border bg-panel px-3.5 py-2.5 text-sm
+      text-foreground placeholder:text-faint transition-colors
+      focus:outline-none focus:ring-2 focus:ring-accent/25 focus:border-accent;
+  }
+
+  .muted {
+    @apply text-muted-foreground text-sm;
+  }
+
+  /* Моноширинный стиль для чисел, дат, номеров, ИНН. */
+  .num {
+    @apply font-mono tabular-nums tracking-tight;
+  }
+
+  /*
+    Кнопка панели инструментов: «Вид · Фильтры · Сортировка».
+    Прозрачная пилюля с границей — набор таких кнопок читается как один
+    инструментальный ряд, а не как пять призывов к действию.
+  */
+  .seg {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-border bg-panel
+      px-3.5 py-2 text-[14.5px] font-medium text-muted-foreground whitespace-nowrap
+      transition-colors hover:border-border-strong hover:text-foreground
+      focus:outline-none focus:ring-2 focus:ring-accent/25;
+  }
+  .seg[aria-pressed="true"],
+  .seg[data-active="true"] {
+    @apply border-accent-line bg-accent-subtle text-accent-fg;
+  }
+
+  /*
+    Полоса показателей: один контейнер, разделённый вертикальными линиями, а не
+    четыре отдельные карточки. Так KPI читаются как одна сводка — приём взят с
+    референса и заодно экономит вертикаль на дашборде.
+  */
+  .stat-strip {
+    @apply card grid divide-y divide-border sm:grid-cols-2 sm:divide-y-0 sm:divide-x lg:grid-cols-4;
+  }
+  .stat-cell {
+    @apply px-5 py-4;
+  }
+  .stat-cell-label {
+    @apply flex items-center gap-1.5 text-[13.5px] font-medium text-muted-foreground;
+  }
+  .stat-cell-value {
+    @apply num mt-1.5 block text-[26px] font-semibold leading-none tracking-tight text-foreground;
+  }
+  .stat-cell-foot {
+    @apply mt-2 flex flex-wrap items-center gap-1.5 text-[12.5px] text-faint;
+  }
+
+  /*
+    Признак горизонтальной прокрутки у края области.
+
+    Прокручиваемая таблица без такого признака выглядит просто обрезанной:
+    пользователь не знает, что справа есть ещё колонки, и не пробует листать.
+
+    Работает на background-attachment: local — «крышки» цвета панели едут
+    вместе с содержимым и закрывают тень, когда прокручивать в эту сторону
+    больше нечего. Поэтому тень видна ровно тогда, когда за краем что-то есть,
+    и никакого JS для этого не нужно.
+  */
+  .scroll-hint-x {
+    background-image:
+      linear-gradient(to right, rgb(var(--panel)), rgb(var(--panel) / 0)),
+      linear-gradient(to left, rgb(var(--panel)), rgb(var(--panel) / 0)),
+      linear-gradient(to right, rgb(28 25 23 / 0.09), rgb(28 25 23 / 0)),
+      linear-gradient(to left, rgb(28 25 23 / 0.09), rgb(28 25 23 / 0));
+    background-position:
+      left center,
+      right center,
+      left center,
+      right center;
+    background-repeat: no-repeat;
+    background-size:
+      28px 100%,
+      28px 100%,
+      14px 100%,
+      14px 100%;
+    background-attachment: local, local, scroll, scroll;
+  }
+
+  /*
+    Текст юридического документа: длинные абзацы читаются построчно, поэтому
+    строка ограничена по ширине, а межстрочный интервал крупнее интерфейсного.
+  */
+  .legal-prose {
+    @apply text-[16px] leading-[1.75] text-ink-soft;
+  }
+  .legal-prose h2 {
+    @apply mt-9 mb-3 text-[19px] font-semibold leading-snug tracking-tight text-foreground;
+  }
+  .legal-prose h3 {
+    @apply mt-6 mb-2 text-[16px] font-semibold text-foreground;
+  }
+  .legal-prose p {
+    @apply mb-4;
+  }
+  .legal-prose ul {
+    @apply mb-4 flex list-disc flex-col gap-2 pl-5 marker:text-faint;
+  }
+  .legal-prose ol {
+    @apply mb-4 flex list-decimal flex-col gap-2 pl-5 marker:text-faint;
+  }
+  .legal-prose a {
+    @apply text-accent-fg underline underline-offset-2;
+  }
+  .legal-prose strong {
+    @apply font-semibold text-foreground;
+  }
+  .legal-prose dl {
+    @apply mb-4 grid gap-x-6 gap-y-2.5 sm:grid-cols-[minmax(0,13rem)_1fr];
+  }
+  .legal-prose dt {
+    @apply text-[15.5px] text-muted-foreground;
+  }
+  .legal-prose dd {
+    @apply m-0 text-foreground;
+  }
+}
+
+/* Единственный продуманный акцент-момент: построчное появление таблицы. */
+@keyframes row-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.row-in {
+  animation: row-in 260ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .row-in {
+    animation: none;
+  }
+}
+
+/* Полоса прокрутки — тёплая, компактная, в тон границам. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgb(var(--border-strong));
+  border-radius: 999px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::selection {
+  background: rgb(var(--accent) / 0.2);
+  color: rgb(var(--foreground));
+}

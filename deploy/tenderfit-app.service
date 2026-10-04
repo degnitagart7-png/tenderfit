@@ -1,0 +1,45 @@
+# systemd-юнит приложения TenderFit на сервере в России.
+#
+# Куда ставить:
+#   sudo cp deploy/tenderfit-app.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now tenderfit-app
+#
+# Файл окружения /etc/tenderfit/app.env содержит ключи Supabase, Контур.Закупок
+# и LLM, поэтому права на него — 640 root:tenderfit. В дереве проекта ключей
+# быть не должно: деплой копирует код без .env-файлов.
+#
+# Порядок путей и пользователя меняют под себя: WorkingDirectory, User и Group
+# обязаны совпадать с тем, куда распакован код.
+
+[Unit]
+Description=TenderFit — веб-приложение (Next.js)
+# Сеть нужна до старта: приложение при первом же запросе идёт в Supabase.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tenderfit
+Group=tenderfit
+WorkingDirectory=/opt/tenderfit-ai
+EnvironmentFile=/etc/tenderfit/app.env
+ExecStart=/usr/bin/npm run start
+
+# Перезапуск всегда: падение приложения означает недоступный сайт, и ждать
+# ручного вмешательства здесь нечего.
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tenderfit-app
+
+# Приложение не должно писать никуда, кроме своей папки.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
