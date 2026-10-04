@@ -660,3 +660,66 @@ export const FABRIKANT_CARD_OTHER_TAB_ACTIVE = buildFabrikantCardPage({
     },
   ],
 });
+
+/**
+ * Второй живой шаблон карточки: срок приёма заявок напечатан панелью процедуры.
+ *
+ * Зонд 03.10.2026 прошёл 12 процедур и нашёл два шаблона. У девяти срок лежал в
+ * панелях лота (`proposal_date_start`, `proposal_date_stop`,
+ * `determination_date`, …); у трёх в лоте не было ни одной панели с датой, а
+ * `proposal_date_stop` стоял на уровне процедуры рядом с `date_publication` и
+ * `summing_up_date`. Процедур без срока вовсе не оказалось ни одной.
+ *
+ * Разбор, который читает срок только из лота, терял эти три: лот оставался без
+ * даты, маппер писал пустую строку в `deadlines.submissionEnd`, а
+ * `scripts/sync-eis.ts` — в колонку `submission_end TIMESTAMPTZ NOT NULL`. Так
+ * прогон 03.10.2026 отклонил 44 закупки Фабриканта с ошибкой 22007.
+ *
+ * Фикстура воспроизводит именно этот шаблон: `submissionEnd` у лота не задан
+ * намеренно, чтобы `fabrikantLotBlock` не напечатал панель `proposal_date_stop`
+ * внутри контейнера лота.
+ */
+export const FABRIKANT_PROCEDURE_DEADLINE_CARD = buildFabrikantCardPage({
+  declaredLotCount: 1,
+  eisNumber: null,
+  procedurePanels: [
+    { key: "type", label: "Тип процедуры", value: "Закупка" },
+    {
+      key: "purchase_category_custom",
+      label: "Название процедуры на ЭТП",
+      value: "Запрос котировок в электронной форме",
+    },
+    { key: "procedure_purchase_mode", label: "Режим проведения процедуры", value: "Открытая форма" },
+    { key: "purchase_section", label: "Секция на торговой площадке", value: "Коммерческие процедуры" },
+    {
+      key: "procedure_common_name",
+      label: "Общее наименование закупки",
+      value: "Работы по капитальному ремонту кровли производственного корпуса",
+    },
+    { key: "date_publication", label: "Дата публикации", value: "30.09.2026 10:03" },
+    {
+      key: "proposal_date_stop",
+      label: "Дата и время окончания приема заявок",
+      value: "07.10.2026 10:00",
+    },
+    { key: "summing_up_date", label: "Дата подведения итогов", value: "09.10.2026 15:00" },
+    { key: "national_privilege_enabled", label: "Устанавливается преимущество", value: "Не установлено" },
+  ],
+  organizer: {
+    name: 'АО "ПРИМЕР ЗАВОДА"',
+    address: "620000, Россия, Свердловская область, Екатеринбург, ул. Примерная, 12",
+    inn: "6658000000",
+  },
+  lots: [
+    {
+      number: 1,
+      subject: "Работы по капитальному ремонту кровли производственного корпуса",
+      price: "3 850 000,00",
+      vatIncluded: true,
+      deliveryRegion: "Свердловская область",
+      deliveryDistrict: "Уральский федеральный округ",
+      deliveryAddress: "г. Екатеринбург, ул. Примерная, 12",
+      okpd2: ["43.91.19.190"],
+    },
+  ],
+});

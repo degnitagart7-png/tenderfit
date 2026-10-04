@@ -8,7 +8,7 @@
  * десятки подобных), но путь карточки без параметра `actions` не запрещает ни
  * одна из 164 строк (проверено 02.10.2026, см. `docs/REFERENCE_PLATFORM_PROBES.md`).
  *
- * Пять особенностей разметки, из-за которых модуль устроен именно так:
+ * Шесть особенностей разметки, из-за которых модуль устроен именно так:
  *
  * 1. **Каждое поле — панель с машинным ключом.** Значение лежит в
  *    `div.panel-group.panel-group-element-{ключ}`, подпись — в `.col-md-4`,
@@ -40,6 +40,18 @@
  *    «Действия История изменений Закрыть Продолжить». Скрипты вырезаются до
  *    чтения текста, иначе «119 994 640,40» превратилось бы в набор цифр из тела
  *    функции.
+ *
+ * 6. **Живых шаблонов карточки два, и срок приёма заявок они печатают на разных
+ *    уровнях.** Зонд 03.10.2026 прошёл 12 процедур: у девяти срок лежал в
+ *    панелях лота вместе с `proposal_date_start`, `determination_date` и
+ *    `summing_up_date`; у трёх в лоте не было ни одной панели с датой, а
+ *    `proposal_date_stop` стоял на уровне процедуры. Процедур без срока вовсе не
+ *    оказалось ни одной. Лот, у которого своего срока нет, наследует срок
+ *    процедуры — иначе закупка уходила в базу с пустой строкой в
+ *    `submission_end TIMESTAMPTZ NOT NULL`, и прогон 03.10.2026 отклонил так 44
+ *    закупки Фабриканта (ошибка 22007). Наследство не подменяет срок лота своим:
+ *    у многолотовой процедуры первого шаблона даты лотов различаются, и точное
+ *    значение важнее общего.
  *
  * Отдельно и жёстко: **личные данные парсер не читает вовсе.** Живая карточка
  * печатает панель `procedure_personal_contact` и внутри составной панели
@@ -119,6 +131,13 @@ const ORGANIZER_PANEL_KEY = "procedure_organizer";
 
 /** Панель места поставки лота: тоже составная. */
 const DELIVERY_PANEL_KEY = "lot_delivery_place";
+
+/**
+ * Панель окончания приёма заявок.
+ *
+ * Ключ один, а уровень разный: см. особенность 6 в шапке модуля.
+ */
+const DEADLINE_PANEL_KEY = "proposal_date_stop";
 
 /** Организатор закупки. */
 export interface FabrikantOrganizer {
@@ -309,6 +328,22 @@ export function parseFabrikantCard(html: string): FabrikantCard {
     applyLotPanel(draft.fields, key, valueText, valueNode);
   });
 
+  // Второй живой шаблон печатает срок приёма заявок панелью процедуры, и в лоте
+  // такой панели нет вовсе (особенность 6 в шапке). Наследуем: пустая строка в
+  // `deadlines.submissionEnd` не записалась бы в `submission_end NOT NULL`, а
+  // `isEveryLotExpired` не узнал бы просроченную процедуру и оставил её в ленте
+  // живой. Свой срок лота при этом важнее общего — он точнее.
+  //
+  // Наследование сделано здесь, а не в маппере и не в адаптере, потому что только
+  // разбор знает, какие панели стояли на уровне процедуры, а какие — в лоте.
+  // Правка в одном месте чинит и публикацию срока, и отсев просрочки.
+  const procedureDeadline = fabrikantDateTime(panels[DEADLINE_PANEL_KEY] ?? "");
+  if (procedureDeadline !== "") {
+    for (const draft of drafts) {
+      if (draft.fields.submissionEnd === "") draft.fields.submissionEnd = procedureDeadline;
+    }
+  }
+
   const lots = drafts.map((draft) => finishLot(draft));
   return {
     layoutRecognized: drafts.length > 0 || Object.keys(panels).length > 0,
@@ -438,7 +473,7 @@ function applyLotPanel(
     case "lot_currency":
       lot.currency = fabrikantCurrency(valueText);
       return;
-    case "proposal_date_stop":
+    case DEADLINE_PANEL_KEY:
       if (lot.submissionEnd === "") lot.submissionEnd = fabrikantDateTime(valueText);
       return;
     case DELIVERY_PANEL_KEY:

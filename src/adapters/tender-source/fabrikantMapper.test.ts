@@ -16,6 +16,7 @@ import {
   FABRIKANT_FZ223_CARD,
   FABRIKANT_NO_PRICE_CARD,
   FABRIKANT_PARTIAL_LOTS_CARD,
+  FABRIKANT_PROCEDURE_DEADLINE_CARD,
   FABRIKANT_SPARSE_CARD,
   buildFabrikantCardPage,
 } from "./fabrikantTestFixtures";
@@ -711,5 +712,73 @@ describe("mapFabrikantProcedure: то, чего карточка не сказа
         expect(printed).not.toContain(forbidden);
       }
     }
+  });
+});
+
+describe("mapFabrikantProcedure: срок подачи заявок", () => {
+  it("процедурный срок второго шаблона поднимается в закупку", () => {
+    const mapped = mapFabrikantProcedure(
+      "5590021",
+      cardsOf(FABRIKANT_PROCEDURE_DEADLINE_CARD),
+      { row: rowOf({ procedureNumber: "5590021" }), lotsComplete: true },
+    );
+    // Пустая строка здесь стоила бы 44 записей: `tenders.submission_end`
+    // объявлен NOT NULL, и прогон 03.10.2026 отклонил эти строки с ошибкой 22007.
+    expect(mapped?.deadlines.submissionEnd).toBe("2026-10-07T10:00:00+03:00");
+  });
+
+  it("процедурный срок читается и со второй страницы карточки", () => {
+    // Процедурные панели площадка печатает на каждой странице карточки
+    // (живой замер 02.10.2026), поэтому наследство действует на всех лотах.
+    const pages = [1, 2].map((page) =>
+      buildFabrikantCardPage({
+        declaredLotCount: 2,
+        eisNumber: null,
+        organizer: null,
+        procedurePanels: [
+          {
+            key: "proposal_date_stop",
+            label: "Дата и время окончания приема заявок",
+            value: "07.10.2026 10:00",
+          },
+        ],
+        lots: [
+          {
+            number: page,
+            subject: `Поставка материалов, лот ${page}`,
+            price: `${page}00 000,00`,
+            deliveryRegion: null,
+          },
+        ],
+      }),
+    );
+    const mapped = mapFabrikantProcedure("5590022", cardsOf(...pages), {
+      row: rowOf({ procedureNumber: "5590022" }),
+      lotsComplete: true,
+    });
+    expect(mapped?.lots.map((lot) => lot.number)).toEqual([1, 2]);
+    expect(mapped?.deadlines.submissionEnd).toBe("2026-10-07T10:00:00+03:00");
+    // Цена складывается из обоих лотов, значит наследство не потеряло ни один.
+    expect(mapped?.financial.price).toBe(300_000);
+  });
+
+  it("срока нет нигде — пустая строка, а не выдуманная дата", () => {
+    // Выдуманная дата прошла бы проверку на просроченный срок и показала
+    // владельцу живую закупку. Пустую строку адаптер отбрасывает со счётчиком.
+    const card = buildFabrikantCardPage({
+      declaredLotCount: 1,
+      eisNumber: null,
+      organizer: null,
+      lots: [
+        {
+          number: 1,
+          subject: "Оказание услуг по техническому обслуживанию",
+          price: "500 000,00",
+          deliveryRegion: null,
+        },
+      ],
+    });
+    const mapped = mapFabrikantProcedure("5590023", [cardOf(card)], { lotsComplete: true });
+    expect(mapped?.deadlines.submissionEnd).toBe("");
   });
 });

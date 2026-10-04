@@ -5,6 +5,7 @@ import {
   eisPublishedSources,
   freeSourceTitles,
   freeSyncSources,
+  slowTrackSources,
   sourceFacts,
   syncableSources,
 } from "./sources";
@@ -198,5 +199,36 @@ describe("бесплатная часть прогона", () => {
   */
   it("названия берутся из тех же записей каталога, что и факты", () => {
     expect(freeSourceTitles()).toEqual(freeSyncSources().map((facts) => facts.title));
+  });
+});
+
+/**
+ * Два трека опроса: какие площадки быстрые, какие медленные.
+ *
+ * Медленными названы те, что тратят отдельный запрос карточки на каждую
+ * процедуру: Росэлторг и Фабрикант. В прогоне 03.10.2026 они заняли 86 секунд
+ * из 280. Остальные отдают выдачу одним-двумя запросами, а платный Контур
+ * ограничен своим суточным бюджетом и имеет собственный интервал, поэтому в
+ * медленный трек не входит: два разных правила на один источник — это
+ * ошибка, а не страховка.
+ */
+describe("треки опроса", () => {
+  it("у каждого источника каталога есть трек", () => {
+    for (const source of SOURCES) {
+      expect(["fast", "slow"]).toContain(source.track);
+    }
+  });
+
+  it("медленные — только площадки с запросом карточки на каждую процедуру", () => {
+    expect(slowTrackSources().sort()).toEqual(["FABRIKANT", "ROSELTORG"]);
+  });
+
+  it("платный Контур остаётся быстрым: его частоту держит собственный интервал", () => {
+    expect(sourceFacts("KONTUR").track).toBe("fast");
+  });
+
+  it("медленные площадки входят в плановый прогон: трек меняет частоту, а не состав", () => {
+    const syncable = syncableSources();
+    for (const source of slowTrackSources()) expect(syncable).toContain(source);
   });
 });

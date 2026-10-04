@@ -79,6 +79,7 @@ import {
 } from "../src/domain/workerSchedule";
 import { syncJobRepository } from "../src/repositories/syncJobRepository";
 import type { SyncJobReport, SyncJobRow } from "../src/types/database";
+import { tracksFor, type SyncTrigger } from "../src/domain/sourceCadence";
 
 loadEnv({ path: resolve(__dirname, "../.env.local") });
 
@@ -347,7 +348,10 @@ interface ScriptRun {
  * Вывод проходит в журнал systemd без изменений и одновременно запоминается
  * хвостом: в отчёт задания нужна итоговая строка, а не мегабайты лога.
  */
-function runScript(script: string): Promise<ScriptRun> {
+function runScript(
+  script: string,
+  extraEnv: Record<string, string> = {},
+): Promise<ScriptRun> {
   return new Promise((resolveRun, rejectRun) => {
     let tsxCli: string;
     try {
@@ -361,7 +365,7 @@ function runScript(script: string): Promise<ScriptRun> {
     try {
       child = spawn(process.execPath, [tsxCli, script], {
         cwd: PROJECT_ROOT,
-        env: process.env,
+        env: { ...process.env, ...extraEnv },
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (err) {
@@ -413,6 +417,7 @@ interface FullSyncResult {
 async function performFullSync(
   config: WorkerConfig,
   reason: string,
+  trigger: SyncTrigger,
 ): Promise<FullSyncResult> {
   const startedAt = new Date().toISOString();
   await beat(config, { lastFullSyncAt: startedAt });
@@ -420,7 +425,10 @@ async function performFullSync(
   const started = Date.now();
   log(`плановый прогон (${reason}): запускаю ${SYNC_SCRIPT}`);
 
-  const run = await runScript(SYNC_SCRIPT);
+  // Плановому запуску достаются только подошедшие треки, человеку — все: см.
+  // `tracksFor`. Решение передаётся скрипту переменной окружения, а не
+  // аргументом, потому что воркер запускает его без аргументов.
+  const run = await runScript(SYNC_SCRIPT, { SYNC_TRACKS: tracksFor(trigger) });
   const ok = run.code === 0;
   const error = ok
     ? null
@@ -498,7 +506,7 @@ async function runDocumentsJob(
 }
 
 async function runFullSyncJob(config: WorkerConfig): Promise<SyncJobReport> {
-  const run = await performFullSync(config, "задание из очереди");
+  const run = await performFullSync(config, "задание из очереди", "queued");
   if (!run.ok)
     throw new Error(run.error ?? `${SYNC_SCRIPT} завершился с ошибкой`);
   return { note: run.note ?? "плановый прогон выполнен" };
@@ -762,7 +770,7 @@ async function tick(config: WorkerConfig): Promise<void> {
   const stopHeartbeat = startWorkHeartbeat(config);
   try {
     if (action.kind === "full_sync") {
-      await performFullSync(config, action.reason);
+      await performFullSync(config, action.reason, "scheduled");
       return;
     }
     await processOneJob(config);
@@ -850,7 +858,7 @@ async function main(): Promise<void> {
     if (cli.forceFullSync) {
       const stopHeartbeat = startWorkHeartbeat(config);
       try {
-        const run = await performFullSync(config, "явный флаг --full-sync");
+        const run = await performFullSync(config, "явный флаг --full-sync", "manual");
         if (!run.ok) process.exitCode = 1;
       } finally {
         stopHeartbeat();

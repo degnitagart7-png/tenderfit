@@ -202,6 +202,58 @@ const EIGHTEEN_LOT_PAGES: readonly string[] = [
 ];
 
 /**
+ * Страница карточки второго живого шаблона: срок приёма заявок напечатан
+ * панелью процедуры, а в лотах панелей с датой нет вовсе.
+ *
+ * Зонд 03.10.2026 прошёл 12 процедур: девять несли срок в панелях лота, три —
+ * только на уровне процедуры. Разбор, который читал срок исключительно из лота,
+ * оставлял такие закупки без даты, и строка не записывалась в
+ * `tenders.submission_end TIMESTAMPTZ NOT NULL`: прогон того дня отклонил 44
+ * закупки Фабриканта с ошибкой 22007.
+ */
+function procedureDeadlineCardPage(
+  numbers: readonly number[],
+  declared: number,
+  submissionEnd: string,
+): string {
+  return buildFabrikantCardPage({
+    declaredLotCount: declared,
+    eisNumber: null,
+    procedurePanels: [
+      {
+        key: "purchase_category_custom",
+        label: "Название процедуры на ЭТП",
+        value: "Запрос котировок в электронной форме",
+      },
+      {
+        key: "purchase_section",
+        label: "Секция на торговой площадке",
+        value: "Коммерческие процедуры",
+      },
+      { key: "date_publication", label: "Дата публикации", value: "30.09.2026 10:03" },
+      {
+        key: "proposal_date_stop",
+        label: "Дата и время окончания приема заявок",
+        value: submissionEnd,
+      },
+      { key: "summing_up_date", label: "Дата подведения итогов", value: "09.10.2026 15:00" },
+    ],
+    organizer: {
+      name: 'АО "ПРИМЕР ЗАВОДА"',
+      address: "620000, Россия, Свердловская область, Екатеринбург, ул. Примерная, 12",
+      inn: "6658000000",
+    },
+    lots: numbers.map((number) => ({
+      number,
+      subject: `Поставка материалов, лот ${number}`,
+      price: `${number} 000 000,00`,
+      vatIncluded: true,
+      deliveryRegion: "Свердловская область",
+    })),
+  });
+}
+
+/**
  * Карточка, у которой регион не читается ни из лота, ни из адреса организатора.
  *
  * Живой замер: у карточки нет обязательных полей, и панель организатора
@@ -649,15 +701,58 @@ describe("FabrikantTenderSourceAdapter.fetchTenders — отсев", () => {
     expect(adapter.filterStats.rejected["срок приёма заявок истёк"]).toBe(1);
   });
 
-  it("нечитаемый срок просрочкой не считается", async () => {
+  it("просроченный срок, напечатанный панелью процедуры, отсеивается так же", async () => {
+    // Второй живой шаблон печатает срок на уровне процедуры. Пока разбор читал
+    // его только из лота, просроченная процедура не узнавалась и оставалась в
+    // ленте живой — счётчик «срок приёма заявок истёк» её просто не видел.
     const { impl } = stubFetch([
       { kind: "search", body: listing(lot(5582388)) },
-      { kind: "card", lotId: lotIdOf(5582388), body: cardPage([1], 1, "дата уточняется") },
+      {
+        kind: "card",
+        lotId: lotIdOf(5582388),
+        body: procedureDeadlineCardPage([1], 1, "20.09.2026 12:00"),
+      },
+    ]);
+    const adapter = makeAdapter(impl);
+
+    const tenders = await adapter.fetchTenders(baseQuery);
+
+    expect(tenders).toEqual([]);
+    expect(adapter.filterStats.rejected["срок приёма заявок истёк"]).toBe(1);
+  });
+
+  it("живой срок процедуры доходит до ленты", async () => {
+    const { impl } = stubFetch([
+      { kind: "search", body: listing(lot(5582388)) },
+      {
+        kind: "card",
+        lotId: lotIdOf(5582388),
+        body: procedureDeadlineCardPage([1], 1, "12.10.2026 10:00"),
+      },
     ]);
 
     const tenders = await makeAdapter(impl).fetchTenders(baseQuery);
 
     expect(tenders).toHaveLength(1);
+    expect(tenders[0]?.deadlines.submissionEnd).toBe("2026-10-12T10:00:00+03:00");
+  });
+
+  it("нечитаемый срок — не просрочка, но и не запись в базу", async () => {
+    // Просрочкой неизвестность не считается по-прежнему: причины разные, и в
+    // журнале их видно отдельно. Но колонка `submission_end` объявлена NOT NULL,
+    // поэтому строка без даты всё равно не записалась бы — прогон 03.10.2026
+    // напечатал 44 таких ошибки вместо одной причины со счётчиком.
+    const { impl } = stubFetch([
+      { kind: "search", body: listing(lot(5582388)) },
+      { kind: "card", lotId: lotIdOf(5582388), body: cardPage([1], 1, "дата уточняется") },
+    ]);
+    const adapter = makeAdapter(impl);
+
+    const tenders = await adapter.fetchTenders(baseQuery);
+
+    expect(tenders).toEqual([]);
+    expect(adapter.filterStats.rejected["срок подачи заявок не напечатан"]).toBe(1);
+    expect(adapter.filterStats.rejected["срок приёма заявок истёк"]).toBe(undefined);
   });
 
   it("регион профиля отсекает чужой субъект", async () => {

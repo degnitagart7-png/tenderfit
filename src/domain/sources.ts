@@ -12,6 +12,15 @@ export type SourceCost = "free" | "paid";
  */
 export type SourceDocuments = "bytes" | "none";
 
+/**
+ * Трек плановой синхронизации.
+ *
+ * `fast` опрашивается каждый плановый прогон. `slow` — не чаще раза в
+ * `SYNC_SLOW_INTERVAL_HOURS` (см. `sourceCadence.ts`): так устроены площадки,
+ * которые тратят отдельный запрос карточки на каждую процедуру.
+ */
+export type SyncTrack = "fast" | "slow";
+
 /** Факты об источнике, которые нужны домену и репозиторию. */
 export interface SourceFacts {
   readonly source: TenderDataSource;
@@ -35,6 +44,15 @@ export interface SourceFacts {
   readonly priority: number;
   /** Входит ли в прогон, когда профиль не перечислил sources явно. */
   readonly byDefault: boolean;
+  /**
+   * Как часто плановый прогон опрашивает источник.
+   *
+   * Медленный — тот, что тратит отдельный запрос карточки на каждую процедуру.
+   * Платный Контур быстрым назван намеренно: его частоту держит собственный
+   * интервал `KONTUR_MIN_INTERVAL_HOURS`, и два правила на один источник —
+   * ошибка, а не страховка.
+   */
+  readonly track: SyncTrack;
   /** Почему документов нет; null, когда они есть. */
   readonly documentsReason: string | null;
 }
@@ -61,6 +79,7 @@ export const SOURCES: readonly SourceFacts[] = [
     publishedInEis: true,
     priority: 50,
     byDefault: true,
+    track: "fast",
     documentsReason: null,
   },
   {
@@ -79,6 +98,7 @@ export const SOURCES: readonly SourceFacts[] = [
     publishedInEis: false,
     priority: 45,
     byDefault: false,
+    track: "fast",
     documentsReason: null,
   },
   {
@@ -89,6 +109,7 @@ export const SOURCES: readonly SourceFacts[] = [
     publishedInEis: false,
     priority: 40,
     byDefault: true,
+    track: "fast",
     documentsReason:
       "Сбербанк-АСТ не отдаёт документацию: файлы лежат в карточке закупки за входом по КЭП — анализировать нечего.",
   },
@@ -123,6 +144,7 @@ export const SOURCES: readonly SourceFacts[] = [
     publishedInEis: false,
     priority: 35,
     byDefault: false,
+    track: "slow",
     documentsReason:
       "Фабрикант не отдаёт документацию: файлы процедуры лежат на отдельном хосте storage.fabrikant.ru, который запрещает доступ роботам целиком — анализировать нечего.",
   },
@@ -134,6 +156,7 @@ export const SOURCES: readonly SourceFacts[] = [
     publishedInEis: false,
     priority: 30,
     byDefault: false,
+    track: "fast",
     documentsReason:
       "Закупка добавлена вручную: документация приходит вместе с файлом, который вы загрузили, в публичных источниках её нет.",
   },
@@ -148,6 +171,7 @@ export const SOURCES: readonly SourceFacts[] = [
     publishedInEis: true,
     priority: 20,
     byDefault: false,
+    track: "fast",
     documentsReason: null,
   },
   {
@@ -173,6 +197,7 @@ export const SOURCES: readonly SourceFacts[] = [
     publishedInEis: false,
     priority: 15,
     byDefault: false,
+    track: "slow",
     documentsReason:
       "Росэлторг не отдаёт документацию: файлы процедуры лежат на отдельном хосте com.roseltorg.ru, который запрещает доступ роботам целиком — анализировать нечего.",
   },
@@ -184,6 +209,7 @@ export const SOURCES: readonly SourceFacts[] = [
     publishedInEis: false,
     priority: 10,
     byDefault: false,
+    track: "fast",
     documentsReason: "Демонстрационная закупка: документы не загружаются.",
   },
 ];
@@ -241,6 +267,14 @@ export function defaultSources(): TenderDataSource[] {
  */
 export function syncableSources(): TenderDataSource[] {
   return SOURCES.filter(isSyncable).map((s) => s.source);
+}
+
+/**
+ * Источники медленного трека: плановый прогон опрашивает их не каждый раз, а
+ * раз в `SYNC_SLOW_INTERVAL_HOURS`. Только те, что входят в плановый прогон.
+ */
+export function slowTrackSources(): TenderDataSource[] {
+  return SOURCES.filter((s) => isSyncable(s) && s.track === "slow").map((s) => s.source);
 }
 
 /**

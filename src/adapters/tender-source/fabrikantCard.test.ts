@@ -21,6 +21,7 @@ import {
   FABRIKANT_FZ223_CARD,
   FABRIKANT_NO_PRICE_CARD,
   FABRIKANT_PARTIAL_LOTS_CARD,
+  FABRIKANT_PROCEDURE_DEADLINE_CARD,
   FABRIKANT_SPARSE_CARD,
   buildFabrikantCardPage,
   buildFabrikantSearchPage,
@@ -228,6 +229,98 @@ describe("parseFabrikantCard: многолотовая процедура", () =
     // Процедурные панели не должны попасть ни в один лот.
     expect(card.lots.every((lot) => lot.deliveryRegion === "Самарская область")).toBe(true);
     expect(card.panels["date_publication"]).toBe("01.10.2026 16:32");
+  });
+});
+
+describe("parseFabrikantCard: срок напечатан панелью процедуры", () => {
+  const card = parseFabrikantCard(FABRIKANT_PROCEDURE_DEADLINE_CARD);
+
+  it("панель срока у второго шаблона лежит на уровне процедуры", () => {
+    // Исходная посылка теста: если площадка начнёт печатать срок в лоте, этот
+    // тест скажет об этом, и правило наследования можно будет пересмотреть.
+    expect(card.panels["proposal_date_stop"]).toBe("07.10.2026 10:00");
+    expect(card.lotsOnPage).toBe(1);
+  });
+
+  it("лот получает срок процедуры, когда своего у него нет", () => {
+    expect(card.lots[0]?.submissionEnd).toBe("2026-10-07T10:00:00+03:00");
+  });
+
+  it("остальные поля лота наследство не трогает", () => {
+    expect(card.lots[0]?.price).toBe(3_850_000);
+    expect(card.lots[0]?.deliveryRegion).toBe("Свердловская область");
+    expect(card.lots[0]?.okpd2Codes).toEqual(["43.91.19.190"]);
+  });
+
+  it("собственный срок лота важнее срока процедуры", () => {
+    const page = buildFabrikantCardPage({
+      declaredLotCount: 1,
+      organizer: null,
+      procedurePanels: [
+        {
+          key: "proposal_date_stop",
+          label: "Дата и время окончания приема заявок",
+          value: "05.10.2026 10:00",
+        },
+      ],
+      lots: [
+        {
+          number: 1,
+          subject: "Поставка оборудования",
+          price: "900 000,00",
+          submissionEnd: "12.10.2026 17:00",
+          deliveryRegion: null,
+        },
+      ],
+    });
+    expect(parseFabrikantCard(page).lots[0]?.submissionEnd).toBe("2026-10-12T17:00:00+03:00");
+  });
+
+  it("нечитаемый срок процедуры не превращается в срок лота", () => {
+    // Выдуманная дата прошла бы проверку на просроченный срок и попала бы в
+    // выдачу как живая. Пустая строка честнее: адаптер отбросит закупку со
+    // счётчиком причины.
+    const page = buildFabrikantCardPage({
+      declaredLotCount: 1,
+      organizer: null,
+      procedurePanels: [
+        {
+          key: "proposal_date_stop",
+          label: "Дата и время окончания приема заявок",
+          value: "уточняется",
+        },
+      ],
+      lots: [
+        { number: 1, subject: "Поставка оборудования", price: "900 000,00", deliveryRegion: null },
+      ],
+    });
+    expect(parseFabrikantCard(page).lots[0]?.submissionEnd).toBe("");
+  });
+
+  it("многолотовая процедура: срок достаётся каждому лоту страницы", () => {
+    const page = buildFabrikantCardPage({
+      declaredLotCount: 3,
+      organizer: null,
+      procedurePanels: [
+        {
+          key: "proposal_date_stop",
+          label: "Дата и время окончания приема заявок",
+          value: "07.10.2026 10:00",
+        },
+      ],
+      lots: [1, 2, 3].map((number) => ({
+        number,
+        subject: `Поставка материалов, лот ${number}`,
+        price: `${number}00 000,00`,
+        deliveryRegion: null,
+      })),
+    });
+    const parsed = parseFabrikantCard(page);
+    expect(parsed.lots.map((lot) => lot.submissionEnd)).toEqual([
+      "2026-10-07T10:00:00+03:00",
+      "2026-10-07T10:00:00+03:00",
+      "2026-10-07T10:00:00+03:00",
+    ]);
   });
 });
 

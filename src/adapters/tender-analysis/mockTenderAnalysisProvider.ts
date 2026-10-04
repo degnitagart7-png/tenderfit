@@ -442,10 +442,29 @@ function buildNextActions(
   return actions;
 }
 
+/** Первая буква строчная, если это не аббревиатура («НМЦК …» остаётся как есть). */
+function lowerFirst(text: string): string {
+  const [first, second] = text;
+  if (first === undefined || second === undefined) return text;
+  return second === second.toLowerCase() && second !== second.toUpperCase()
+    ? first.toLowerCase() + text.slice(1)
+    : text;
+}
+
+/**
+ * Главная причина отказа: первый критический блокер, а если критических нет —
+ * первый из остальных. Критический идёт раньше потому, что он один обрывает
+ * разговор («срок подачи истёк»), а остальные лишь снижают оценку.
+ */
+function topBlockerReason(blockers: readonly HardBlocker[]): string | null {
+  const top = blockers.find((blocker) => blocker.critical) ?? blockers[0];
+  return top?.reason ?? null;
+}
+
 function buildSummary(
   verdict: TenderAnalysis["verdict"],
   fitScore: number,
-  tender: Tender,
+  hardBlockers: readonly HardBlocker[],
 ): string {
   /*
     Название закупки в эту строку не входит. Она печатается прямо под
@@ -455,14 +474,28 @@ function buildSummary(
     «Fit Score» здесь тоже не место. Цифра стоит рядом отдельным числом, а в
     тексте нужен ответ, а не метрика: подходит, надо посмотреть, не подходит.
   */
-  void tender;
+  const score = String(fitScore);
   switch (verdict) {
     case "RECOMMENDED":
-      return `Подходит под ваш профиль: ${String(fitScore)} из 100. Стоп-факторов нет.`;
+      return `Подходит под ваш профиль: ${score} из 100. Стоп-факторов нет.`;
     case "MANUAL_REVIEW":
-      return `Надо посмотреть самому: ${String(fitScore)} из 100. Есть условия, которые нужно уточнить.`;
-    default:
-      return `Не подходит: ${String(fitScore)} из 100. Нашлись стоп-факторы.`;
+      return `Надо посмотреть самому: ${score} из 100. Есть условия, которые нужно уточнить.`;
+    default: {
+      /*
+        Отказ называет причину. Закупка с прошедшим сроком остаётся в ленте до
+        следующего опроса источника (ЕИС отдаёт и те, приём заявок по которым
+        закончился три недели назад), и раньше пояснение говорило лишь «нашлись
+        стоп-факторы» — человек видел отказ и искал причину по странице.
+
+        Балл подписан как соответствие профилю: у закупки с истёкшим сроком он
+        может быть 98 из 100, и без подписи «Не подходит: 98 из 100» читалось
+        как противоречие.
+      */
+      const reason = topBlockerReason(hardBlockers);
+      return reason === null
+        ? `Не подходит: слабое соответствие профилю — ${score} из 100.`
+        : `Не подходит: ${lowerFirst(reason)}. Соответствие профилю — ${score} из 100.`;
+    }
   }
 }
 
@@ -515,7 +548,7 @@ export function analyzeTender(
   });
 
   // Вердикт — вывод AI: он тоже получает своё доказательство с трассировкой.
-  const summary = buildSummary(verdict, fitScore, tender);
+  const summary = buildSummary(verdict, fitScore, hardBlockers);
   const verdictEvidence: Evidence = {
     id: nextEvidenceId(),
     source: "AI_CONCLUSION",

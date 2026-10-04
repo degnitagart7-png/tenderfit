@@ -58,3 +58,51 @@ describe("analyzeTender — истёкший срок подачи", () => {
     );
   });
 });
+
+/**
+ * Пояснение к вердикту «Не подходит» называет причину.
+ *
+ * Закупка с прошедшим сроком попадает в ленту и остаётся там до следующего
+ * опроса источника: ЕИС отдаёт и закупки, приём заявок по которым закончился
+ * больше трёх недель назад (замер 04.10.2026: 43 из 116, самая старая — 633
+ * часа). Карточка уже писала «подача завершена» и ставила вердикт «Не подходит»,
+ * но само пояснение говорило «Нашлись стоп-факторы» — и не сообщало, какой.
+ * Человек видел отказ без причины и шёл искать её по странице.
+ */
+describe("пояснение к отказу называет главную причину", () => {
+  const NOW = new Date("2026-10-04T12:00:00.000Z");
+  const base = demoTenders[0]!;
+  const expired = {
+    ...base,
+    deadlines: { ...base.deadlines, submissionEnd: "2026-09-08T08:00:00.000Z" },
+  };
+
+  it("закрытый приём заявок назван словами", () => {
+    const analysis = analyzeTender(expired, demoCompanyProfile, NOW);
+
+    expect(analysis.verdict).toBe("NOT_RECOMMENDED");
+    expect(analysis.summary.toLowerCase()).toContain("срок подачи истёк");
+  });
+
+  it("общего «нашлись стоп-факторы» в таком отказе больше нет", () => {
+    const analysis = analyzeTender(expired, demoCompanyProfile, NOW);
+
+    expect(analysis.summary).not.toContain("Нашлись стоп-факторы");
+  });
+
+  it("балл остаётся рядом с причиной", () => {
+    const analysis = analyzeTender(expired, demoCompanyProfile, NOW);
+
+    expect(analysis.summary).toContain(`${String(analysis.fitScore)} из 100`);
+  });
+
+  it("живая закупка этой причины не получает", () => {
+    const open = {
+      ...base,
+      deadlines: { ...base.deadlines, submissionEnd: "2026-12-01T08:00:00.000Z" },
+    };
+    const analysis = analyzeTender(open, demoCompanyProfile, NOW);
+
+    expect(analysis.summary.toLowerCase()).not.toContain("срок подачи истёк");
+  });
+});

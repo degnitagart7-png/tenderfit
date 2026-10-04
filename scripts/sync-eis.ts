@@ -85,6 +85,13 @@
  *   KONTUR_API_KEY, KONTUR_API_BASE_URL, KONTUR_DAILY_REQUEST_LIMIT,
  *   KONTUR_MIN_INTERVAL_HOURS —
  *     платный источник Контур.Закупки (см. docs/REFERENCE_KONTUR_API.md)
+ *   SYNC_SLOW_INTERVAL_HOURS (по умолчанию 6; 0 — выключить) —
+ *     как часто плановый прогон опрашивает медленный трек: Росэлторг и
+ *     Фабрикант, которые тратят отдельный запрос карточки на каждую процедуру.
+ *     Остальные источники идут каждый прогон. Подробности — src/domain/sourceCadence.ts
+ *   SYNC_TRACKS=all или флаг --all-tracks —
+ *     опросить оба трека, не проверяя интервал. Воркер ставит это для кнопки
+ *     «Запустить прогон» и ручного --full-sync; плановый тик не ставит.
  *
  * Реестр ЕИС, его хранилище файлов и часть площадок блокируют зарубежные IP,
  * поэтому скрипт должен работать с российской машины/сервера. Перед сбором он
@@ -101,7 +108,7 @@
 import { config } from "dotenv";
 import { resolve } from "node:path";
 import { readFileSync } from "node:fs";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { TenderSourceAdapter } from "../src/adapters/types";
 import type { KonturTenderSourceAdapter } from "../src/adapters/tender-source/konturTenderSourceAdapter";
 import type { TektorgTenderSourceAdapter } from "../src/adapters/tender-source/tektorgTenderSourceAdapter";
@@ -116,7 +123,8 @@ import {
   type KonturSourceStop,
 } from "../src/services/konturSyncService";
 import { SOURCE_BINDINGS } from "../src/services/tenderSourceRegistry";
-import { defaultSources, syncableSources } from "../src/domain/sources";
+import { defaultSources, slowTrackSources, syncableSources } from "../src/domain/sources";
+import { decideTrack, slowTrackIntervalHours } from "../src/domain/sourceCadence";
 import { runDocumentFetch } from "./fetch-tender-documents";
 // Расшифровка ошибок общая с воркером: те же коды и та же подпись «источник не
 // пускает наш адрес» в обоих логах, иначе причину сбоя пришлось бы узнавать
@@ -341,6 +349,30 @@ function eisApplies(profile: SyncProfile, eisLaws: TenderLaw[]): boolean {
   return eisLaws.length > 0 || profile.laws.length === 0;
 }
 
+
+/**
+ * Когда источник в последний раз записывали в таблицу закупок; null — неизвестно.
+ *
+ * Очистка в конце прогона удаляет все строки источника и пишет заново, поэтому
+ * самая свежая `created_at` — это момент последнего опроса, который что-то
+ * вернул. Ошибка чтения и пустая таблица дают null: решение «неизвестно —
+ * опрашивать» безопаснее остановленного источника.
+ */
+async function lastStoredAt(
+  client: SupabaseClient,
+  source: TenderDataSource,
+): Promise<string | null> {
+  const { data, error } = await client
+    .from("tenders")
+    .select("created_at")
+    .eq("data_source", source)
+    .order("created_at", { ascending: false })
+    .limit(1);
+  if (error || !data || data.length === 0) return null;
+  const row = data[0] as { created_at?: string | null } | undefined;
+  return typeof row?.created_at === "string" ? row.created_at : null;
+}
+
 /**
  * Флаг `--sources=EIS,KONTUR`: опрашивать только перечисленные источники.
  *
@@ -530,6 +562,11 @@ async function main(): Promise<void> {
   // Проверочный прогон не должен тратить платные запросы: Контур.Закупки
   // в --dry-run опрашивается только с этим явным флагом.
   const allowPaidApi = process.argv.includes("--paid-api");
+  // Кнопка «Запустить прогон» и ручной запуск опрашивают оба трека: человек
+  // просит свежее, и ждать окна медленного трека ему незачем. Плановый запуск
+  // этот флаг не получает. Воркер передаёт его переменной окружения, а не
+  // аргументом, потому что запускает скрипт без аргументов.
+  const allTracks = process.argv.includes("--all-tracks") || process.env["SYNC_TRACKS"] === "all";
   // --sources=EIS,KONTUR сужает прогон до перечисленных источников (null — все).
   const onlySources = parseSourcesArg();
 
@@ -633,6 +670,38 @@ async function main(): Promise<void> {
         console.log(`Контур.Закупки: ${reason} — источник пропущен.`);
         wanted.delete("KONTUR");
         droppedSources.set("KONTUR", reason);
+      }
+    }
+  }
+
+  // Медленный трек: Росэлторг и Фабрикант тратят отдельный запрос карточки на
+  // каждую процедуру (86 секунд из 280 в прогоне 03.10.2026), поэтому плановый
+  // запуск опрашивает их не чаще раза в SYNC_SLOW_INTERVAL_HOURS (по умолчанию
+  // 6), а остальные источники — каждый раз. Отсчёт от времени последней записи
+  // источника: очистка ниже удаляет ВСЕ строки опрошенного источника и пишет
+  // заново, поэтому `max(created_at)` и есть момент прошлого опроса. Колонка
+  // synced_at для этого не годится: её пишет только Контур, и на ней держится
+  // метка «последний поиск» в ленте.
+  //
+  // Пропущенный источник не затирается: очистка идёт только для тех, кто в этот
+  // раз вернул закупки. Явный --sources и ручной запуск трек не проверяют.
+  if (!onlySources && !allTracks) {
+    const intervalHours = slowTrackIntervalHours(process.env["SYNC_SLOW_INTERVAL_HOURS"]);
+    if (intervalHours > 0) {
+      for (const source of slowTrackSources()) {
+        if (!wanted.has(source)) continue;
+        const decision = decideTrack({
+          lastStoredAt: await lastStoredAt(supabase, source),
+          now: new Date().toISOString(),
+          minIntervalHours: intervalHours,
+        });
+        if (decision.poll) continue;
+        // По договору `reason` заполнен, когда `poll === false`, но тип допускает
+        // null: без подстановки в лог попало бы слово «null» вместо объяснения.
+        const reason = decision.reason ?? "соблюдается интервал медленного трека";
+        console.log(`${source}: ${reason} — источник пропущен.`);
+        wanted.delete(source);
+        droppedSources.set(source, reason);
       }
     }
   }
@@ -1129,7 +1198,13 @@ async function main(): Promise<void> {
   // в этот раз что-то отдал — иначе сетевой сбой опустошил бы ленту.
   for (const source of SYNC_SOURCES) {
     if ((perSource.get(source) ?? 0) === 0) {
-      console.log(`Очистка ${source} пропущена: источник не вернул новых закупок`);
+      // Пропущенный треком источник не «ничего не вернул», а не опрашивался: его
+      // строки остаются как есть до следующего опроса.
+      console.log(
+        droppedSources.has(source)
+          ? `Очистка ${source} пропущена: источник не опрашивался в этом прогоне`
+          : `Очистка ${source} пропущена: источник не вернул новых закупок`,
+      );
       continue;
     }
     const { error: cleanError, count: deleted } = await supabase
@@ -1147,8 +1222,24 @@ async function main(): Promise<void> {
   let errors = 0;
   let documents = 0;
   let duplicates = 0;
+  /** Номера закупок, которые не записаны из-за ненапечатанного срока подачи. */
+  const withoutDeadline: string[] = [];
 
   for (const t of unique.values()) {
+    // `submission_end` объявлен NOT NULL, а пустую строку в этом поле способен
+    // отдать не один источник: Фабрикант и Росэлторг берут ближайший срок из
+    // лотов, ТЭК-Торг — `dateEndRegistration`, Контур — `ApplicationDeadline`.
+    // Прогон 03.10.2026 напечатал на этом 44 ошибки 22007 — по строке на каждую
+    // закупку, — и причина в журнале так и не появилась.
+    //
+    // Подставить «сегодня» или дату публикации нельзя: выдуманная дата прошла бы
+    // проверку на просроченный срок и показала партнёру закупку, срок которой
+    // неизвестен. Потеря со счётчиком и номерами честнее.
+    if (t.deadlines.submissionEnd.trim() === "") {
+      withoutDeadline.push(t.regNumber);
+      continue;
+    }
+
     const row = {
       reg_number: t.regNumber,
       external_id: t.externalId,
@@ -1219,6 +1310,17 @@ async function main(): Promise<void> {
   const elapsed = ((Date.now() - started) / 1000).toFixed(1);
   console.log();
   if (konturAdapter) logKonturUsage(konturAdapter);
+  if (withoutDeadline.length > 0) {
+    // Номера печатаются, чтобы потерю можно было проверить по карточке площадки.
+    // Дальше двадцати — только первые: строка на сотню номеров не читается, а
+    // счётчик и так виден.
+    const shown = withoutDeadline.slice(0, 20).join(", ");
+    console.log(
+      `Не записано без срока подачи заявок: ${withoutDeadline.length} (${shown}${
+        withoutDeadline.length > 20 ? ", …" : ""
+      })`,
+    );
+  }
   console.log(
     `Готово: ${saved} сохранено, ${documents} документов, ${duplicates} уже было от другого источника, ${errors} ошибок, ${elapsed} с`,
   );
