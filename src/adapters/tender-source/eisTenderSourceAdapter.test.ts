@@ -254,3 +254,246 @@ describe("EisTenderSourceAdapter.resolveCustomer", () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+/**
+ * Глубина выдачи ЕИС в живом поиске.
+ *
+ * Адаптер читал только первую страницу из десяти закупок, а лимит лишь
+ * обрезал её. Плановому профилю с лимитом 10 этого хватало; живой поиск с
+ * лимитом 25 получал те же десять, и «найдено 10» выглядело как «больше
+ * нет», хотя ЕИС отдавала сотни.
+ */
+describe("EisTenderSourceAdapter.fetchTenders — глубина выдачи", () => {
+  function manyCards(count: number): { regNumber: string; inn: string | null }[] {
+    return Array.from({ length: count }, (_, i) => ({
+      regNumber: String(32616000000 + i),
+      inn: null,
+    }));
+  }
+
+  it("лимит 25 просит страницу на 50 и отдаёт ровно 25", async () => {
+    const { impl, calls } = stubFetch([{ match: "extendedsearch", body: resultsPage(manyCards(50)) }]);
+
+    const tenders = await makeAdapter(impl).fetchTenders({ laws: ["FZ_44", "FZ_223"], keywords: ["юристы"], limit: 25 });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain("recordsPerPage=_50");
+    expect(tenders).toHaveLength(25);
+  });
+
+  it("лимит 10 остаётся прежним: страница без параметра размера", async () => {
+    const { impl, calls } = stubFetch([{ match: "extendedsearch", body: resultsPage(manyCards(10)) }]);
+
+    const tenders = await makeAdapter(impl).fetchTenders({ laws: ["FZ_44", "FZ_223"], keywords: ["юристы"], limit: 10 });
+
+    expect(calls[0]).not.toContain("recordsPerPage");
+    expect(tenders).toHaveLength(10);
+  });
+
+  it("maxPages листает страницы по сто, пока выдача не кончится, и собирает без повторов", async () => {
+    const page = (from: number, count: number) =>
+      resultsPage(Array.from({ length: count }, (_, i) => ({ regNumber: String(32616000000 + from + i), inn: null })));
+    const { impl, calls } = stubFetch([
+      { match: "pageNumber=3", body: page(200, 40) },
+      { match: "pageNumber=2", body: page(100, 100) },
+      { match: "extendedsearch", body: page(0, 100) },
+    ]);
+
+    const tenders = await makeAdapter(impl).fetchTenders({
+      laws: ["FZ_44", "FZ_223"],
+      keywords: ["юристы"],
+      limit: 300,
+      maxPages: 5,
+    });
+
+    expect(calls).toHaveLength(3);
+    expect(calls.every((url) => url.includes("recordsPerPage=_100"))).toBe(true);
+    expect(tenders).toHaveLength(240);
+    expect(new Set(tenders.map((t) => t.regNumber)).size).toBe(240);
+  });
+
+  it("maxPages не больше запрошенного: третья страница не читается", async () => {
+    const page = (from: number) =>
+      resultsPage(Array.from({ length: 100 }, (_, i) => ({ regNumber: String(32616000000 + from + i), inn: null })));
+    const { impl, calls } = stubFetch([
+      { match: "pageNumber=3", body: page(200) },
+      { match: "pageNumber=2", body: page(100) },
+      { match: "extendedsearch", body: page(0) },
+    ]);
+
+    const tenders = await makeAdapter(impl).fetchTenders({
+      laws: ["FZ_44", "FZ_223"],
+      keywords: ["юристы"],
+      limit: 300,
+      maxPages: 2,
+    });
+
+    expect(calls).toHaveLength(2);
+    expect(tenders).toHaveLength(200);
+  });
+
+  it("первая страница короче сотни — вторая не запрашивается", async () => {
+    const { impl, calls } = stubFetch([{ match: "extendedsearch", body: resultsPage(manyCards(30)) }]);
+
+    const tenders = await makeAdapter(impl).fetchTenders({
+      laws: ["FZ_44", "FZ_223"],
+      keywords: ["юристы"],
+      limit: 300,
+      maxPages: 3,
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(tenders).toHaveLength(30);
+  });
+
+  describe("регион заказчика", () => {
+    it("регион из запроса уходит в ЕИС кодом, а закупкам проставляется этот регион", async () => {
+      const { impl, calls } = stubFetch([{ match: "extendedsearch", body: resultsPage(manyCards(3)) }]);
+
+      const tenders = await makeAdapter(impl).fetchTenders({
+        laws: ["FZ_44", "FZ_223"],
+        keywords: ["строительство"],
+        regions: ["Бурятия"],
+        limit: 25,
+      });
+
+      expect(calls).toHaveLength(1);
+      const url = new URL(calls[0]!);
+      expect(url.searchParams.get("customerPlace")).toBe("03000000000");
+      expect(url.searchParams.get("customerPlaceCodes")).toBe("03000000000");
+      expect(tenders.map((t) => t.region)).toEqual(Array(3).fill("Республика Бурятия"));
+    });
+
+    it("два региона — два запроса, закупки без повторов и со своим регионом", async () => {
+      const bur = resultsPage([{ regNumber: "32616000001", inn: null }]);
+      const msk = resultsPage([
+        { regNumber: "32616000002", inn: null },
+        { regNumber: "32616000001", inn: null },
+      ]);
+      const { impl, calls } = stubFetch([
+        { match: "customerPlace=77000000000", body: msk },
+        { match: "customerPlace=03000000000", body: bur },
+      ]);
+
+      const tenders = await makeAdapter(impl).fetchTenders({
+        laws: ["FZ_44", "FZ_223"],
+        keywords: ["строительство"],
+        regions: ["Республика Бурятия", "Москва"],
+        limit: 25,
+      });
+
+      expect(calls).toHaveLength(2);
+      expect(tenders.map((t) => t.regNumber).sort()).toEqual(["32616000001", "32616000002"]);
+      expect(tenders.find((t) => t.regNumber === "32616000002")?.region).toBe("Москва");
+    });
+
+    it("название, которое не удалось опознать, не даёт поиск по чужому коду: ищем по всей России", async () => {
+      const { impl, calls } = stubFetch([{ match: "extendedsearch", body: resultsPage(manyCards(2)) }]);
+
+      const tenders = await makeAdapter(impl).fetchTenders({
+        laws: ["FZ_44"],
+        keywords: ["x"],
+        regions: ["Нарния"],
+        limit: 10,
+      });
+
+      expect(new URL(calls[0]!).searchParams.has("customerPlace")).toBe(false);
+      expect(tenders.every((t) => t.region !== "Нарния")).toBe(true);
+    });
+
+    it("публикация за последние N дней уходит датой в формате ЕИС", async () => {
+      const { impl, calls } = stubFetch([{ match: "extendedsearch", body: resultsPage(manyCards(1)) }]);
+
+      await makeAdapter(impl).fetchTenders({
+        laws: ["FZ_44"],
+        keywords: [],
+        regions: ["Бурятия"],
+        publishedWithinDays: 30,
+        nowMs: Date.parse("2026-10-05T12:00:00Z"),
+        limit: 10,
+      });
+
+      const url = new URL(calls[0]!);
+      expect(url.searchParams.get("publishDateFrom")).toBe("05.09.2026");
+      expect(url.searchParams.has("searchString")).toBe(false);
+    });
+
+    it("не больше трёх регионов за запрос: каждый стоит страницы выдачи", async () => {
+      const { impl, calls } = stubFetch([{ match: "extendedsearch", body: resultsPage(manyCards(1)) }]);
+
+      await makeAdapter(impl).fetchTenders({
+        laws: ["FZ_44"],
+        keywords: ["x"],
+        regions: ["Бурятия", "Москва", "Свердловская область", "Приморский край", "Крым"],
+        limit: 10,
+      });
+
+      expect(calls).toHaveLength(3);
+    });
+  });
+
+  it("лимита нет — обычная страница", async () => {
+    const { impl, calls } = stubFetch([{ match: "extendedsearch", body: resultsPage(manyCards(10)) }]);
+
+    await makeAdapter(impl).fetchTenders({ laws: ["FZ_44", "FZ_223"], keywords: ["юристы"] });
+
+    expect(calls[0]).not.toContain("recordsPerPage");
+  });
+});
+
+
+/*
+  Временная блокировка частых запросов (05.10.2026): после нескольких прогонов
+  подряд ЕИС отвечала 403 на все запросы, а через несколько минут тому же адресу
+  снова 200. Короткая пауза в четыре секунды её не пережидала, и прогон
+  возвращался пустым. На 403 и 429 адаптер ждёт дольше и пробует снова.
+*/
+describe("EisTenderSourceAdapter: временная блокировка (403/429)", () => {
+  function flaky(statuses: number[], okBody: string) {
+    const calls: number[] = [];
+    let i = 0;
+    const impl = vi.fn(async () => {
+      const status = statuses[i] ?? 200;
+      i += 1;
+      calls.push(status);
+      return { ok: status === 200, status, text: async () => (status === 200 ? okBody : "Forbidden") } as unknown as Response;
+    });
+    return { impl: impl as unknown as typeof fetch, calls };
+  }
+
+  function adapterWith(fetchImpl: typeof fetch, retries = 3) {
+    return new EisTenderSourceAdapter({
+      rateLimitPerSec: 1000,
+      maxRetries: retries,
+      blockedBackoffMs: 1,
+      fetchImpl,
+    });
+  }
+
+  it("403, затем 200 — выдача получена, блокировка пережидается", async () => {
+    const { impl, calls } = flaky([403, 403], resultsPage(manyCardsForBlock(3)));
+
+    const tenders = await adapterWith(impl).fetchTenders({ laws: ["FZ_44"], keywords: ["x"], limit: 10 });
+
+    expect(tenders).toHaveLength(3);
+    expect(calls).toEqual([403, 403, 200]);
+  });
+
+  it("429 тоже пережидается", async () => {
+    const { impl } = flaky([429], resultsPage(manyCardsForBlock(2)));
+
+    expect(await adapterWith(impl).fetchTenders({ laws: ["FZ_44"], keywords: ["x"], limit: 10 })).toHaveLength(2);
+  });
+
+  it("блокировка не кончается — ошибка с кодом, а не пустая выдача", async () => {
+    const { impl } = flaky([403, 403, 403, 403, 403], "");
+
+    await expect(
+      adapterWith(impl, 2).fetchTenders({ laws: ["FZ_44"], keywords: ["x"], limit: 10 }),
+    ).rejects.toThrow(/HTTP 403/);
+  });
+});
+
+function manyCardsForBlock(count: number): { regNumber: string; inn: string | null }[] {
+  return Array.from({ length: count }, (_, i) => ({ regNumber: String(32616100000 + i), inn: null }));
+}

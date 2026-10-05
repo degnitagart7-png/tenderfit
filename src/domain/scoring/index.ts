@@ -9,6 +9,7 @@ import type {
 } from "@/domain/entities";
 import { profileDescribesSubject } from "@/domain/emptyCompanyProfile";
 import { isPriceKnown, isRegionKnown } from "@/domain/entities";
+import { regionCodeOf } from "@/domain/regionCodes";
 import { matchCapabilities } from "@/domain/scoring/matching";
 import {
   admissionBlockers,
@@ -128,7 +129,28 @@ export function computeSubjectFit(
   // Штраф за стоп-слова (нерелевантная закупка).
   score -= match.matchedStopWords.length * 25;
 
+  /*
+    Закупку отобрала модель по смыслу под слова, которые совпадают с видами
+    работ компании («Благоустройство территории» под «строительство, ремонт»),
+    или её нашёл живой поиск по такому запросу. Слов компании в названии нет,
+    но предмет совпал — модель это уже проверила. Без этого правила такие
+    закупки получали «Не подходит» и уходили в «Скрыто» (05.10.2026).
+  */
+  if (foundForCompanyTerms(tender, allKeywords)) score = Math.max(score, SENSE_SUBJECT_SCORE);
+
   return round(clamp(score));
+}
+
+/** Балл предмета для закупки, отобранной по смыслу под слова компании. */
+const SENSE_SUBJECT_SCORE = 70;
+
+function foundForCompanyTerms(tender: Tender, companyTerms: readonly string[]): boolean {
+  const found = [...(tender.senseKeywords ?? []), ...(tender.liveQuery ? [tender.liveQuery] : [])]
+    .map((w) => w.trim().toLowerCase())
+    .filter((w) => w !== "");
+  if (found.length === 0) return false;
+  const terms = companyTerms.map((t) => t.trim().toLowerCase()).filter((t) => t.length >= 3);
+  return found.some((w) => terms.some((t) => w.includes(t) || t.includes(w)));
 }
 
 /* ============================== Legal Eligibility ============================== */
@@ -164,6 +186,19 @@ export function computeLegalEligibility(
 
 /* ============================== Operational Fit ============================== */
 
+/** Сколько баллов теряет известный регион вне приоритетных. */
+const PRIORITY_REGION_PENALTY = 15;
+/** Сколько теряет закупка с неизвестным регионом, когда регионы компании заданы. */
+const UNKNOWN_REGION_PENALTY = 8;
+
+/** Один и тот же регион: по коду, если оба названия опознаны, иначе по подстроке. */
+function sameRegion(a: string, b: string): boolean {
+  const ra = regionCodeOf(a);
+  const rb = regionCodeOf(b);
+  if (ra !== null && rb !== null) return ra.code === rb.code;
+  return b.toLowerCase().includes(a.toLowerCase()) || a.toLowerCase().includes(b.toLowerCase());
+}
+
 export function computeOperationalFit(
   tender: Tender,
   profile: CompanyProfile,
@@ -171,13 +206,31 @@ export function computeOperationalFit(
   const r = profile.restrictions;
   let score = 100;
 
-  // Регион.
+  // Регион. Неизвестный регион — не чужой: штрафа нет, вопрос задаёт отдельная
+  // неопределённость «Регион поставки не указан» (см. detectUncertainties).
+  const regionKnown = isRegionKnown(tender.region);
   const regionOk =
     r.workRegions.length === 0 ||
+    !regionKnown ||
     r.workRegions
       .filter(Boolean)
       .some((reg) => tender.region.toLowerCase().includes(reg.toLowerCase()));
   if (!regionOk) score -= 60;
+  // Регион неизвестен, а компания работает в определённых регионах: это не
+  // «чужой» регион, но и не подтверждённый свой. Небольшой штраф ставит такие
+  // закупки ниже закупок из региона компании (раньше они шли выше).
+  const hasGeography = r.workRegions.filter(Boolean).length > 0;
+  const priorityList = (profile.preferences?.priorityRegions ?? []).filter(Boolean);
+  if (!regionKnown && (hasGeography || priorityList.length > 0)) score -= UNKNOWN_REGION_PENALTY;
+
+  // Приоритетный регион: не исключает остальные, но поднимает свой. Известный
+  // регион вне приоритетных теряет немного баллов; неизвестный — нет (вопрос о
+  // нём задаёт неопределённость). Названия сравниваются по коду региона, а не
+  // по написанию: «Бурятия» и «Республика Бурятия» — один регион.
+  if (priorityList.length > 0 && regionKnown) {
+    const inPriority = priorityList.some((name) => sameRegion(name, tender.region));
+    if (!inPriority) score -= PRIORITY_REGION_PENALTY;
+  }
 
   // Срок поставки: если меньше минимально допустимого — не успеваем.
   const deliveryDays = tender.deadlines.deliveryTermDays;

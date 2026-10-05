@@ -1,5 +1,6 @@
 "use client";
 
+import { KONTUR_ENABLED } from "@/domain/features";
 import { useCallback, useEffect, useState } from "react";
 import { Calculator, Download, ExternalLink, RefreshCw } from "lucide-react";
 import { EstimateResult } from "@/components/estimate/EstimateResult";
@@ -173,6 +174,7 @@ export function DeepAnalysisPanel({
    * каждом открытии карточки.
    */
   const loadCard = useCallback(async () => {
+    if (!KONTUR_ENABLED) return;
     try {
       const next = await deepAnalysisService.getKonturCard(tenderId);
       setCard(next);
@@ -354,13 +356,15 @@ export function DeepAnalysisPanel({
             <EstimateResult data={estimateJob.result} regNumber={tenderId} />
           )}
 
-          <KonturCardBlock
-            tenderId={tenderId}
-            card={card}
-            cardError={cardError}
-            onRetry={() => void loadCard()}
-            refresh={refreshAfterPurchase}
-          />
+          {KONTUR_ENABLED && (
+            <KonturCardBlock
+              tenderId={tenderId}
+              card={card}
+              cardError={cardError}
+              onRetry={() => void loadCard()}
+              refresh={refreshAfterPurchase}
+            />
+          )}
 
           {summary.verdictChange && (
             <div className="rounded-md border border-brick/45 bg-brick/5 px-3 py-2">

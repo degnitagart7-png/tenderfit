@@ -1,5 +1,6 @@
 "use client";
 
+import { KONTUR_ENABLED } from "@/domain/features";
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { AlertTriangle, ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
@@ -135,7 +136,7 @@ export function DashboardView() {
     блоком сверху — ответ на «куда уходит результат поиска» обязан быть виден
     сразу, без похода в ленту из нескольких сотен строк.
   */
-  const lastBatch = useMemo(() => selectLastKonturBatch(rows), [rows]);
+  const lastBatch = useMemo(() => (KONTUR_ENABLED ? selectLastKonturBatch(rows) : null), [rows]);
 
   const batchIds = useMemo(
     () => new Set((lastBatch?.rows ?? []).map((row) => row.tender.id)),

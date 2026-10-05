@@ -249,3 +249,50 @@ describe("useTenderData — прогон по кнопке", () => {
     expect(result.current.syncState.syncing).toBe(false);
   });
 });
+
+
+describe("useTenderData — свежие закупки без перезагрузки страницы", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(companyProfileRepository.get).mockReturnValue(demoCompanyProfile);
+    vi.mocked(tenderApiService.getRows).mockResolvedValue([]);
+  });
+
+  it("возвращение на вкладку перечитывает ленту, если данные старше пяти минут", async () => {
+    const realNow = Date.now;
+    let now = realNow();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      await mount();
+      expect(tenderApiService.getRows).toHaveBeenCalledTimes(1);
+
+      window.dispatchEvent(new Event("focus"));
+      expect(tenderApiService.getRows).toHaveBeenCalledTimes(1);
+
+      now += 6 * 60_000;
+      window.dispatchEvent(new Event("focus"));
+      await waitFor(() => expect(tenderApiService.getRows).toHaveBeenCalledTimes(2));
+    } finally {
+      vi.mocked(Date.now).mockRestore();
+    }
+  });
+
+  it("фоновый сбой не заменяет показанную ленту ошибкой", async () => {
+    const realNow = Date.now;
+    let now = realNow();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const { result } = await mount();
+      vi.mocked(tenderApiService.getRows).mockRejectedValueOnce(new Error("сеть"));
+
+      now += 6 * 60_000;
+      window.dispatchEvent(new Event("focus"));
+      await waitFor(() => expect(tenderApiService.getRows).toHaveBeenCalledTimes(2));
+
+      expect(result.current.error).toBeNull();
+      expect(result.current.loading).toBe(false);
+    } finally {
+      vi.mocked(Date.now).mockRestore();
+    }
+  });
+});

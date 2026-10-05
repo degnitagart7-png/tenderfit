@@ -353,3 +353,39 @@ describe("вердикт при пустом профиле", () => {
     expect(verdict).toBe("NOT_RECOMMENDED");
   });
 });
+
+
+/*
+  Замечание 05.10.2026: «Благоустройство общественной территории», «Сети
+  водоснабжения», «Содержание автомобильных дорог» модель отобрала для
+  строительной компании по смыслу, а оценка сверяла предмет со словами
+  «Строительство, Ремонт» и ставила «Не подходит» — закупки уходили в «Скрыто».
+*/
+describe("computeSubjectFit — закупка, отобранная по смыслу", () => {
+  const profile = profileWith(["Строительство", "Ремонт", "Капитальный ремонт"]);
+
+  it("отобрана моделью под слова, совпадающие с видами работ компании — предмет совпал", () => {
+    const tender = { ...tenderAbout("Благоустройство общественной территории"), senseKeywords: ["строительство", "ремонт"] };
+
+    expect(computeSubjectFit(tender, profile)).toBeGreaterThanOrEqual(SUBJECT_FIT_FLOOR);
+    expect(detectHardBlockers(tender, profile).map((b) => b.reason)).not.toContain(SUBJECT_BLOCKER);
+  });
+
+  it("найдена живым поиском по запросу из видов работ — тоже совпал", () => {
+    const tender = { ...tenderAbout("Устройство тротуара"), liveQuery: "Ремонт" };
+
+    expect(computeSubjectFit(tender, profile)).toBeGreaterThanOrEqual(SUBJECT_FIT_FLOOR);
+  });
+
+  it("отобрана под чужие слова (юристы) — пометка не помогает", () => {
+    const tender = { ...tenderAbout("Оказание юридических услуг"), senseKeywords: ["юридические услуги"] };
+
+    expect(computeSubjectFit(tender, profile)).toBeLessThan(SUBJECT_FIT_FLOOR);
+  });
+
+  it("без пометки — как раньше, по словам", () => {
+    expect(computeSubjectFit(tenderAbout("Благоустройство общественной территории"), profile)).toBeLessThan(
+      SUBJECT_FIT_FLOOR,
+    );
+  });
+});

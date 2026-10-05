@@ -120,8 +120,15 @@ export const tenderRequirementSchema = z.object({
 
 export const tenderDeadlineSchema = z.object({
   submissionEnd: z.string().min(1),
-  publicationDate: z.string().min(1),
-  lastUpdateDate: z.string().min(1),
+  /*
+    Даты публикации и обновления могут быть пустой строкой: так домен записывает
+    «неизвестно». Росэлторг не печатает дату публикации вовсе, Фабрикант — дату
+    обновления, и схема, требовавшая непустые строки, роняла весь анализ: лента
+    вместо списка показывала «String must contain at least 1 character(s)».
+    Срок подачи остаётся обязательным — без него закупку не оценить.
+  */
+  publicationDate: z.string(),
+  lastUpdateDate: z.string(),
   deliveryTermDays: z.number().int().nullable(),
   warrantyMonths: z.number().int().nullable(),
 });

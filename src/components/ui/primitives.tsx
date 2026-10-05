@@ -408,7 +408,7 @@ export function Checkbox({
   label,
   className,
   ...props
-}: InputHTMLAttributes<HTMLInputElement> & { label?: string }) {
+}: InputHTMLAttributes<HTMLInputElement> & { label?: ReactNode }) {
   return (
     <label className={cn("inline-flex items-center gap-2 text-sm text-muted-foreground", className)}>
       <input

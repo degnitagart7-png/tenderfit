@@ -1,5 +1,6 @@
 "use client";
 
+import { KONTUR_ENABLED } from "@/domain/features";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { RefreshCw, ServerCog, ServerOff } from "lucide-react";
 import type { SearchProfile } from "@/domain/entities";
@@ -101,7 +102,7 @@ export function TenderSearchPanel({
   }, []);
 
   useEffect(() => {
-    if (!open || usageRequested) return;
+    if (!KONTUR_ENABLED || !open || usageRequested) return;
     setUsageRequested(true);
     void loadUsage();
   }, [open, usageRequested, loadUsage]);
@@ -194,19 +195,23 @@ export function TenderSearchPanel({
                 onRun={() => void runFreeSync()}
               />
 
-              <KonturPressSection
-                profiles={profiles}
-                plan={plan}
-                usage={usage}
-                usageLoading={usageLoading}
-                usageError={usageError}
-                syncing={syncing}
-                onSelectProfile={setSelectedId}
-                onRun={(selected) => void runKonturSync(selected)}
-                onCancel={() => onOpenChange(false)}
-              />
+              {KONTUR_ENABLED && (
+                <KonturPressSection
+                  profiles={profiles}
+                  plan={plan}
+                  usage={usage}
+                  usageLoading={usageLoading}
+                  usageError={usageError}
+                  syncing={syncing}
+                  onSelectProfile={setSelectedId}
+                  onRun={(selected) => void runKonturSync(selected)}
+                  onCancel={() => onOpenChange(false)}
+                />
+              )}
 
-              {report && <KonturPressReport report={report} at={syncState.lastSynced} />}
+              {KONTUR_ENABLED && report && (
+                <KonturPressReport report={report} at={syncState.lastSynced} />
+              )}
             </div>
           </Card>
         </div>

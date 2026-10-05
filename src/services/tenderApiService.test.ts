@@ -111,6 +111,29 @@ function firstFetchUrl(): string {
   return String(vi.mocked(globalThis.fetch).mock.calls[0]?.[0] ?? "");
 }
 
+describe("запрос живого поиска из строки базы", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    localStorage.clear();
+  });
+
+  it("строка, найденная живым поиском, несёт запрос, которым найдена", async () => {
+    stubFetch([dbRow({ raw_data: { origin: "live", query: "строительство", at: "2026-10-05T10:00:00Z" } })]);
+
+    const row = await tenderApiService.getRowById("SBR028-2609080053", profile);
+
+    expect(row?.tender.liveQuery).toBe("строительство");
+  });
+
+  it("обычная строка и чужой raw_data запроса не имеют", async () => {
+    stubFetch([dbRow({ raw_data: { source: "kontur" } })]);
+
+    const row = await tenderApiService.getRowById("SBR028-2609080053", profile);
+
+    expect(row?.tender.liveQuery ?? null).toBeNull();
+  });
+});
+
 describe("tenderApiService.getRowById", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
@@ -316,5 +339,140 @@ describe("tenderApiService.getRowById — документация закупк�
 
     expect(row?.tender.regNumber).toBe("SBR028-2609080053");
     expect(row?.tender.documents).toEqual([]);
+  });
+});
+
+/**
+ * Одна закупка с изъяном не должна ронять всю ленту.
+ *
+ * 04.10.2026 лента показала вместо списка «String must contain at least 1
+ * character(s)»: Росэлторг не печатает дату публикации, и `analyzeTender`
+ * падал на первой такой закупке. Цикл по строкам не ловил исключение, поэтому
+ * сто двадцать три нормальные закупки пропали вместе с одной непригодной.
+ *
+ * Причину (схема требовала непустые даты) убрали отдельно, но класс поломки
+ * остаётся: любая будущая площадка принесёт строку, которую анализ не примет.
+ */
+describe("tenderApiService.getRows — устойчивость к плохой строке", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    localStorage.clear();
+  });
+
+  it("закупка без дат публикации и обновления попадает в ленту", async () => {
+    stubFetch([dbRow({ publication_date: null, last_update_date: null })]);
+
+    const rows = await tenderApiService.getRows(profile);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.tender.deadlines.publicationDate).toBe("");
+  });
+
+  it("непригодная строка пропускается, остальные остаются", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    stubFetch([
+      dbRow({ reg_number: "A-1" }),
+      dbRow({ reg_number: "A-2", submission_end: "" }),
+      dbRow({ reg_number: "A-3" }),
+    ]);
+
+    const rows = await tenderApiService.getRows(profile);
+
+    expect(rows.map((row) => row.tender.regNumber)).toEqual(["A-1", "A-3"]);
+  });
+
+  it("пропуск не молчаливый: номер закупки попадает в журнал", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    stubFetch([dbRow({ reg_number: "BAD-7", submission_end: "" })]);
+
+    await tenderApiService.getRows(profile);
+
+    expect(String(spy.mock.calls[0]?.join(" "))).toContain("BAD-7");
+  });
+});
+
+/**
+ * Лента загружает все закупки, а не первые пятьсот.
+ *
+ * Ручка по умолчанию отдаёт пятьсот строк, а лента вызывала её без параметров.
+ * Пока в базе было 382 закупки, потолок был невидим; при росте базы лента
+ * молча обрезалась бы, а заголовок «Найдено N из N» продолжал бы утверждать,
+ * что N — это всё. Тихая потеря хуже видимой ошибки: человек не знает, что
+ * чего-то не увидел.
+ */
+describe("tenderApiService.getRows — постраничная загрузка", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    localStorage.clear();
+  });
+
+  function pagedFetch(total: number, pageSize = 1000): ReturnType<typeof vi.fn> {
+    const all = Array.from({ length: total }, (_, i) =>
+      dbRow({ reg_number: `P-${String(i)}`, id: `id-${String(i)}` }),
+    );
+    const spy = vi.fn().mockImplementation(async (url: string) => {
+      const params = new URL(String(url), "http://localhost").searchParams;
+      const offset = Number(params.get("offset") ?? "0");
+      const limit = Number(params.get("limit") ?? "500");
+      const tenders = all.slice(offset, offset + Math.min(limit, pageSize));
+      return { ok: true, json: async () => ({ tenders, count: tenders.length }) } as unknown as Response;
+    });
+    vi.stubGlobal("fetch", spy);
+    return spy;
+  }
+
+  it("тысяча триста закупок приходят все", async () => {
+    pagedFetch(1300);
+
+    const rows = await tenderApiService.getRows(profile);
+
+    expect(rows).toHaveLength(1300);
+  });
+
+  it("страницы запрашиваются по тысяче и с растущим смещением", async () => {
+    const spy = pagedFetch(2500);
+
+    await tenderApiService.getRows(profile);
+
+    const urls = spy.mock.calls.map((call) => new URL(String(call[0]), "http://localhost").searchParams);
+    expect(urls.map((p) => p.get("offset"))).toEqual(["0", "1000", "2000"]);
+    expect(urls.every((p) => p.get("limit") === "1000")).toBe(true);
+  });
+
+  it("неполная страница — конец: лишнего запроса нет", async () => {
+    const spy = pagedFetch(300);
+
+    await tenderApiService.getRows(profile);
+
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("ровно тысяча: нужен ещё один запрос, чтобы убедиться, что дальше пусто", async () => {
+    const spy = pagedFetch(1000);
+
+    const rows = await tenderApiService.getRows(profile);
+
+    expect(rows).toHaveLength(1000);
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it("повтор строки на стыке страниц не удваивает закупку", async () => {
+    const a = dbRow({ reg_number: "DUP-1", id: "a" });
+    const spy = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ tenders: [...Array.from({ length: 999 }, (_, i) => dbRow({ reg_number: `X-${String(i)}`, id: `x${String(i)}` })), a], count: 1000 }),
+      } as unknown as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ tenders: [a, dbRow({ reg_number: "END", id: "e" })], count: 2 }),
+      } as unknown as Response);
+    vi.stubGlobal("fetch", spy);
+
+    const rows = await tenderApiService.getRows(profile);
+
+    expect(rows.filter((row) => row.tender.regNumber === "DUP-1")).toHaveLength(1);
+    expect(rows).toHaveLength(1001);
   });
 });

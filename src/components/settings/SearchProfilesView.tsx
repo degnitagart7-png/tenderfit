@@ -7,6 +7,8 @@ import { searchProfileRepository } from "@/repositories/searchProfileRepository"
 import { Button, Card, Checkbox, Field, Input } from "@/components/ui/primitives";
 import { TagListInput } from "@/components/onboarding/TagListInput";
 import { lawLabels } from "@/lib/labels";
+import { accountSync } from "@/services/accountSync";
+import { demandReporter } from "@/services/demandReporter";
 
 const ALL_LAWS: TenderLaw[] = ["FZ_44", "FZ_223", "PP_RF_615", "COMMERCIAL"];
 
@@ -119,7 +121,7 @@ function SearchProfileForm({
         </Field>
         <Field
           label="Регионы"
-          hint="У большинства закупок ЕИС регион не определён — такие проходят фильтр с оговоркой, а не исчезают. Остальные площадки отбирают по региону на своей стороне при синхронизации."
+          hint="Регион не отсекает ленту: она покажет всё найденное по словам, а на странице закупок предложит сузить выдачу по региону одной кнопкой. Подходит ли закупка по региону компании, говорит оценка «подходит / не подходит» (рабочие регионы — в профиле компании). Закупки с неопределённым регионом остаются."
         >
           <TagListInput
             values={draft.regions}
@@ -194,6 +196,8 @@ export function SearchProfilesView() {
   const persist = (next: SearchProfile[]) => {
     setProfiles(next);
     searchProfileRepository.save(next);
+    void demandReporter.report(next);
+    void accountSync.pushIfSignedIn();
   };
 
   const save = (p: SearchProfile) => {

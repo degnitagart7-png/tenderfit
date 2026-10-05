@@ -3,6 +3,9 @@ import type { SearchProfile } from "@/domain/entities";
 import {
   autoAppliedProfile,
   filtersFromSearchProfile,
+  limitsFromProfile,
+  profileNarrowing,
+  searchWordsFromProfile,
 } from "@/domain/searchProfileFilters";
 
 function profile(overrides: Partial<SearchProfile> = {}): SearchProfile {
@@ -73,6 +76,94 @@ describe("filtersFromSearchProfile", () => {
   });
 });
 
+/*
+  Два слоя выдачи. Первый находит всё, что есть по словам профиля, по всей
+  России. Второй — оценка «подходит / не подходит», которая учитывает регион,
+  цену и ограничения компании и показывает причину. Раньше лента сама вешала на
+  выдачу регион и цену из профиля поиска, и человек, набравший «строительство»,
+  видел одну Московскую область: остальное пропадало без объяснения, а оценка
+  подходящести не имела закупок, которые могла бы оценить (разбор 05.10.2026).
+*/
+describe("searchWordsFromProfile", () => {
+  const p = profile({
+    keywords: ["строительство", "ремонт"],
+    laws: ["FZ_44", "FZ_223"],
+    regions: ["Москва", "Московская область"],
+    customerInns: ["7708503727"],
+    minPrice: 100_000,
+    maxPrice: 5_000_000,
+  });
+
+  it("берёт слова и законы, строка поиска остаётся человеку", () => {
+    expect(searchWordsFromProfile(p)).toEqual({
+      search: "",
+      searchKeywords: ["строительство", "ремонт"],
+      laws: ["FZ_44", "FZ_223"],
+      page: 1,
+    });
+  });
+
+  it("регион, заказчиков и цену не трогает: их учитывает оценка, а не отбор", () => {
+    const filters = searchWordsFromProfile(p);
+
+    expect(filters).not.toHaveProperty("region");
+    expect(filters).not.toHaveProperty("regions");
+    expect(filters).not.toHaveProperty("customerInn");
+    expect(filters).not.toHaveProperty("minPrice");
+    expect(filters).not.toHaveProperty("maxPrice");
+  });
+});
+
+describe("limitsFromProfile", () => {
+  it("отдаёт только регион, заказчиков и цену — без слов и законов", () => {
+    const limits = limitsFromProfile(
+      profile({
+        keywords: ["строительство"],
+        laws: ["FZ_44"],
+        regions: ["Москва", "Московская область"],
+        customerInns: ["7708503727"],
+        minPrice: 10,
+        maxPrice: 20,
+      }),
+    );
+
+    expect(limits).toEqual({
+      region: "Москва",
+      regions: ["Московская область"],
+      customerInn: "7708503727",
+      customerInns: [],
+      minPrice: 10,
+      maxPrice: 20,
+    });
+    expect(limits).not.toHaveProperty("searchKeywords");
+    expect(limits).not.toHaveProperty("laws");
+  });
+});
+
+describe("profileNarrowing", () => {
+  it("называет, что профиль ограничивает сверх слов", () => {
+    const lines = profileNarrowing(
+      profile({ regions: ["Москва", "Московская область"], maxPrice: 5_000_000, customerInns: ["7708503727"] }),
+    );
+
+    expect(lines).toEqual([
+      "регион: Москва, Московская область",
+      "цена до 5 000 000 ₽",
+      "заказчиков: 1",
+    ]);
+  });
+
+  it("обе границы цены называются вместе", () => {
+    expect(profileNarrowing(profile({ minPrice: 30_000, maxPrice: 5_000_000 }))).toEqual([
+      "цена от 30 000 до 5 000 000 ₽",
+    ]);
+  });
+
+  it("профиль только со словами ничего не ограничивает", () => {
+    expect(profileNarrowing(profile({ keywords: ["x"] }))).toEqual([]);
+  });
+});
+
 describe("autoAppliedProfile", () => {
   it("берёт первый включённый — тот же, что тратит бюджет на кнопке поиска", () => {
     const chosen = autoAppliedProfile([
@@ -83,14 +174,23 @@ describe("autoAppliedProfile", () => {
     expect(chosen?.id).toBe("on");
   });
 
-  it("профиль без единого ограничения не применяется", () => {
-    // Иначе на выдачу вешается чип, который ничего не меняет.
+  it("профиль без слов не применяется: искать нечего, а регион и цена отбором не служат", () => {
     expect(autoAppliedProfile([profile()])).toBeNull();
+    expect(autoAppliedProfile([profile({ regions: ["Москва"] })])).toBeNull();
+    expect(autoAppliedProfile([profile({ maxPrice: 5_000_000 })])).toBeNull();
   });
 
-  it("ограничением считается не только слово, но и регион или цена", () => {
-    expect(autoAppliedProfile([profile({ regions: ["Москва"] })])?.id).toBe("sp-1");
-    expect(autoAppliedProfile([profile({ maxPrice: 5_000_000 })])?.id).toBe("sp-1");
+  it("пустой профиль в начале списка не мешает: берётся первый включённый со словами", () => {
+    const chosen = autoAppliedProfile([
+      profile({ id: "empty" }),
+      profile({ id: "stroy", keywords: ["ремонт"], regions: ["Республика Бурятия"] }),
+    ]);
+
+    expect(chosen?.id).toBe("stroy");
+  });
+
+  it("с хотя бы одним словом применяется", () => {
+    expect(autoAppliedProfile([profile({ keywords: ["вентиляция"] })])?.id).toBe("sp-1");
   });
 
   it("без профилей возвращает null", () => {

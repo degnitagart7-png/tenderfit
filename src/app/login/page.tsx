@@ -1,11 +1,9 @@
 "use client";
 
-import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ShieldCheck, Sparkles, FileSearch } from "lucide-react";
-import { Button, Field, Input } from "@/components/ui/primitives";
-import { authRepository } from "@/repositories/authRepository";
+import { AuthForm } from "@/components/auth/AuthForm";
 import { LEGAL_PAGES, OPERATOR } from "@/lib/legal";
 import { STORAGE_KEYS, readJSON } from "@/lib/storage";
 import { freeSourceTitles } from "@/domain/sources";
@@ -22,36 +20,9 @@ const FREE_SOURCES_TEXT = joinRuList(freeSourceTitles());
 
 export default function LoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState("demo@tenderfit.local");
-  const [password, setPassword] = useState("demo12345");
-  const [error, setError] = useState<string | null>(null);
-
   const goNext = (): void => {
     const onboardingDone = readJSON<boolean>(STORAGE_KEYS.onboardingDone, false);
     router.push(onboardingDone ? "/tenders" : "/onboarding");
-  };
-
-  const submit = (e: React.FormEvent): void => {
-    e.preventDefault();
-    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
-      setError("Введите корректный email");
-      return;
-    }
-    if (password.length < 6) {
-      setError("Пароль должен быть не короче 6 символов");
-      return;
-    }
-    setError(null);
-    authRepository.login(email);
-    goNext();
-  };
-
-  /** Вход без пароля: проверка учётных данных ещё не реализована. */
-  const enterWithoutPassword = (): void => {
-    authRepository.login(
-      /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) ? email : "user@tenderfit.local",
-    );
-    goNext();
   };
 
   return (
@@ -100,59 +71,28 @@ export default function LoginPage() {
       {/* Форма входа */}
       <div className="flex items-center justify-center p-6">
         <div className="w-full max-w-sm">
-          <h2 className="mb-1 text-[28px] font-semibold tracking-tight text-foreground">Вход</h2>
+          <h2 className="mb-1 text-[28px] font-semibold tracking-tight text-foreground">Добро пожаловать</h2>
           <p className="muted mb-6">
             Закупки — из открытых источников: {FREE_SOURCES_TEXT}. Разбор идёт по
             извещению и документации, если площадка её отдаёт.
           </p>
 
-          <form onSubmit={submit} className="space-y-4" noValidate>
-            <Field label="Email" error={error && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) ? error : undefined}>
-              <Input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                autoComplete="email"
-                aria-label="Email"
-              />
-            </Field>
-            <Field
-              label="Пароль"
-              error={error && password.length < 6 ? error : undefined}
-            >
-              <Input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="current-password"
-                aria-label="Пароль"
-              />
-            </Field>
-
-            {error && (
-              <p className="text-sm text-brick-fg" role="alert">
-                {error}
-              </p>
-            )}
-
-            <Button type="submit" className="w-full">
-              Войти
-            </Button>
-            <Button type="button" variant="outline" className="w-full" onClick={enterWithoutPassword}>
-              Войти без пароля
-            </Button>
-          </form>
+          <AuthForm onSignedIn={goNext} />
 
           {/*
-            Честно о двух ограничениях: пароль не проверяется, а профиль
-            компании живёт в этом браузере. Обещать «вход» и молчать об этом —
-            значит подставлять пользователя, который зайдёт с другого устройства
-            и не найдёт своих данных.
+            Вход нужен, чтобы профили и анкета были на любом устройстве. Без
+            него всё работает, но живёт только в этом браузере, и сказать об
+            этом надо до выбора, а не после.
           */}
           <p className="text-xs text-faint mt-6 text-center">
-            Пароль пока не проверяется: полноценная регистрация появится позже. Профиль компании
-            и настройки сохраняются в этом браузере — на другом устройстве их не будет.
+            Вход необязателен. Без него профили и настройки сохраняются только в этом браузере, а
+            после входа — на любом вашем устройстве.
           </p>
+          <div className="mt-3 text-center">
+            <Link href="/tenders" className="text-sm text-muted-foreground underline hover:text-foreground">
+              Продолжить без входа
+            </Link>
+          </div>
 
           {/*
             Документы доступны до входа: решение «оставлять ли здесь данные

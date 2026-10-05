@@ -1,3 +1,4 @@
+import { KONTUR_DISABLED_MESSAGE, KONTUR_ENABLED } from "@/domain/features";
 import { NextRequest, NextResponse } from "next/server";
 import { hasKonturApiKey, resolveKonturContract } from "@/adapters/tender-source/konturContract";
 import {
@@ -50,6 +51,9 @@ function envNumber(name: string, fallback: number): number {
  * Ключ API в ответ не попадает — только признак configured.
  */
 export async function GET(request: NextRequest): Promise<NextResponse> {
+  if (!KONTUR_ENABLED) {
+    return NextResponse.json({ error: KONTUR_DISABLED_MESSAGE }, { status: 410 });
+  }
   const limitParam = Number.parseInt(
     request.nextUrl.searchParams.get("limit") ?? "",
     10,

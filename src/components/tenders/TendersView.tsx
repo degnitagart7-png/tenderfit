@@ -25,12 +25,22 @@ import { buildSnippetCorpus, snippetForMatch, snippetIsRedundant } from "@/domai
 import {
   autoAppliedProfile,
   filtersFromSearchProfile,
+  limitsFromProfile,
+  profileNarrowing,
+  searchWordsFromProfile,
 } from "@/domain/searchProfileFilters";
 import { profileDescribesSubject } from "@/domain/emptyCompanyProfile";
+import type { RerankVerdict } from "@/domain/searchAssist";
+import { searchAssistApiService } from "@/services/searchAssistApiService";
+import { QuickProfileCard } from "@/components/tenders/QuickProfileCard";
+import { SearchAssistBar } from "@/components/tenders/SearchAssistBar";
 import { companyProfileRepository } from "@/repositories/companyProfileRepository";
 import { activeFilterChips } from "@/lib/filterChips";
-import { searchEmptyLabel } from "@/lib/labels";
+import type { TenderVerdict } from "@/domain/enums";
+import { cn } from "@/lib/cn";
+import { searchEmptyLabel, verdictLabels } from "@/lib/labels";
 import { searchProfileRepository } from "@/repositories/searchProfileRepository";
+import { demandReporter } from "@/services/demandReporter";
 import { useTenderData } from "@/hooks/useTenderData";
 import { LawSwitcher } from "@/components/tenders/LawSwitcher";
 import { TenderFiltersPanel } from "@/components/tenders/TenderFiltersPanel";
@@ -61,17 +71,37 @@ import { isCriticalDeadline } from "@/domain/scoring";
 const sortExplanations: Record<SortField, string> = {
   freshness: "сначала найденные последним поиском",
   relevance: "сначала самые подходящие под запрос",
-  fitScore: "отсортировано по тому, насколько закупка подходит компании",
+  fitScore: "сначала самые подходящие вашей компании",
   price: "отсортировано по НМЦК",
   submissionEnd: "отсортировано по сроку подачи",
   subject: "отсортировано по названию",
   analyzedAt: "отсортировано по дате разбора",
 };
 
+const SHOW_ALL_KEY = "tenderfit.feedShowAll";
+
+/** Сколько ждём поиск на площадках после первого профиля: столько он и длится в худшем случае. */
+const FIRST_SEARCH_WAIT_MS = 8 * 60_000;
+
 export function TendersView() {
   const { rows, loading, error, reload } = useTenderData();
   const [filters, setFilters] = useState<Filters>(defaultFilters);
   const [searchProfiles, setSearchProfiles] = useState<SearchProfile[]>([]);
+  /*
+    Вся общая база — только по явной просьбе. Без своего профиля человек видел
+    закупки, собранные под чужие профили (у владельца — стройка в Бурятии):
+    база общая, а лента должна быть его. Выбор живёт до закрытия вкладки.
+  */
+  const [showAll, setShowAll] = useState(false);
+  useEffect(() => {
+    try {
+      setShowAll(sessionStorage.getItem(SHOW_ALL_KEY) === "1");
+    } catch {
+      // Память вкладки недоступна — спросим снова.
+    }
+  }, []);
+  /** Что сейчас с поиском на площадках, запущенным из «Что вы ищете?». */
+  const [firstSearch, setFirstSearch] = useState<string | null>(null);
   const router = useRouter();
   const pathname = usePathname();
   /*
@@ -91,23 +121,37 @@ export function TendersView() {
   const [emptyProfileName, setEmptyProfileName] = useState<string | null>(null);
 
   useEffect(() => {
-    const enabled = searchProfileRepository.getAll().filter((p) => p.enabled);
+    const all = searchProfileRepository.getAll();
+    const enabled = all.filter((p) => p.enabled);
     setSearchProfiles(enabled);
+    // Сервер собирает закупки по темам посетителей: сообщаем свои (без ожидания).
+    void demandReporter.report(all);
     const params = new URLSearchParams(window.location.search);
-    if (params.toString() !== "") {
-      setFilters(filtersFromSearchParams(params));
+    const fromUrl = filtersFromSearchParams(params);
+    /*
+      Профиль поиска применяется всегда и сразу. Раньше любой параметр в адресе
+      отключал его, и вкладка со старым адресом (прежний набор слов, закон)
+      показывала всю базу по России вместо закупок регионов человека — даже
+      после обновления страницы (замечание 05.10.2026).
+
+      Исключение одно: в адресе свой запрос (`q`) — это ссылка на конкретный
+      поиск или поиск, который человек набрал сам; она открывается как есть.
+      Из остального адреса берутся только порядок и страница: условия отбора
+      задаёт профиль, а не устаревшая ссылка.
+    */
+    const auto = autoAppliedProfile(enabled);
+    if (auto && fromUrl.search.trim() === "") {
+      setFilters({
+        ...defaultFilters,
+        sortField: fromUrl.sortField,
+        sortDir: fromUrl.sortDir,
+        page: fromUrl.page,
+        pageSize: fromUrl.pageSize,
+        ...searchWordsFromProfile(auto),
+      });
+      setAppliedProfileName(auto.name);
     } else {
-      /*
-        Своего адреса нет — открыли ленту с меню. Применяем профиль поиска:
-        человек уже сказал, что ищет, и показывать вместо этого всё подряд
-        значит игнорировать настройку. Ограничения при этом видны чипами и
-        снимаются одним нажатием, так что скрытой фильтрации не возникает.
-      */
-      const auto = autoAppliedProfile(enabled);
-      if (auto) {
-        setAppliedProfileName(auto.name);
-        setFilters((f) => ({ ...f, ...filtersFromSearchProfile(auto) }));
-      }
+      setFilters(fromUrl);
     }
     // Оба обновления попадают в один коммит: эффект записи впервые отработает
     // уже с фильтрами из адреса и не сделает лишней навигации.
@@ -138,7 +182,109 @@ export function TendersView() {
   // Запрос разбирается один раз на фильтр-объект: он нужен и ленте (отбор),
   // и таблице (сниппет), и подписи пустой выдачи.
   const textQuery = useMemo(() => buildTextQuery(filters), [filters]);
-  const hits = useMemo(() => searchRows(rows, filters), [rows, filters]);
+  /*
+    Оценки модели по смыслу. Живут только пока не изменился запрос: выдача
+    поменялась, и оценки относились бы к другим закупкам.
+  */
+  const [verdicts, setVerdicts] = useState<Record<string, RerankVerdict> | null>(null);
+  const [hideModelNo, setHideModelNo] = useState(false);
+  const queryKey = `${filters.search}␟${filters.searchKeywords.join("␞")}`;
+  useEffect(() => {
+    setVerdicts(null);
+    setHideModelNo(false);
+  }, [queryKey]);
+
+  /*
+    Заполнен ли профиль настолько, чтобы соответствие что-то означало. Читаем
+    один раз при монтировании: профиль правят на другом экране, и между
+    переходами компонент пересоздаётся.
+  */
+  const [subjectKnown, setSubjectKnown] = useState(true);
+  /** Приоритетные регионы компании: где искать, если человек регион не задал. */
+  const [priorityRegions, setPriorityRegions] = useState<string[]>([]);
+  /** О чём компания, коротко: модели нужно понимать, «подходит ли это нам». */
+  const [companyNote, setCompanyNote] = useState("");
+  useEffect(() => {
+    const profile = companyProfileRepository.get();
+    setSubjectKnown(profileDescribesSubject(profile));
+    setPriorityRegions(profile.preferences.priorityRegions.filter((r) => r.trim() !== ""));
+    setCompanyNote(
+      (profile.activityDescription.trim() !== ""
+        ? profile.activityDescription
+        : profile.capabilities.products.slice(0, 12).join(", ")
+      ).slice(0, 400),
+    );
+  }, []);
+
+  const allHits = useMemo(() => searchRows(rows, filters), [rows, filters]);
+  const foundHits = useMemo(
+    () =>
+      hideModelNo && verdicts !== null
+        ? allHits.filter((hit) => verdicts[hit.row.tender.id]?.fit !== "no")
+        : allHits,
+    [allHits, hideModelNo, verdicts],
+  );
+
+  /*
+    Второй шаг: исключить найденное по профилю. Первый слой нашёл всё по словам,
+    по всей России; теперь из найденного убирается то, что не подходит под
+    условия профиля поиска (регион, цена, заказчики) и под профиль компании
+    (оценка «Не подходит»: регион вне географии работы, цена вне диапазона,
+    нет лицензий). Скрытое не пропадает молча: число названо над таблицей, а
+    «Показать скрытые» возвращает его в выдачу.
+  */
+  const [showExcluded, setShowExcluded] = useState(false);
+  const appliedProfile = searchProfiles.find((p) => p.name === appliedProfileName) ?? null;
+  const profileLimitIds = useMemo(() => {
+    if (appliedProfile === null || profileNarrowing(appliedProfile).length === 0) return null;
+    return new Set(
+      searchRows(rows, { ...filters, ...limitsFromProfile(appliedProfile) }).map((hit) => hit.row.tender.id),
+    );
+  }, [rows, filters, appliedProfile]);
+  const excluded = useMemo(() => {
+    const byLimits = new Set<string>();
+    const byFit = new Set<string>();
+    for (const hit of foundHits) {
+      const id = hit.row.tender.id;
+      if (profileLimitIds !== null && !profileLimitIds.has(id)) {
+        byLimits.add(id);
+      } else if (
+        subjectKnown &&
+        filters.verdict === "ALL" &&
+        hit.row.analysis.verdict === "NOT_RECOMMENDED"
+      ) {
+        byFit.add(id);
+      }
+    }
+    return { byLimits, byFit, total: byLimits.size + byFit.size };
+  }, [foundHits, profileLimitIds, subjectKnown, filters.verdict]);
+  const hits = useMemo(
+    () =>
+      showExcluded
+        ? foundHits
+        : foundHits.filter(
+            (hit) =>
+              !excluded.byLimits.has(hit.row.tender.id) &&
+              !excluded.byFit.has(hit.row.tender.id),
+          ),
+    [foundHits, showExcluded, excluded],
+  );
+
+  /*
+    Второй слой выдачи. Первый нашёл всё по словам; здесь видно, как оценка
+    по профилю компании делит найденное. Счёт идёт по выдаче без фильтра по
+    оценке: иначе выбранная кнопка показывала бы нули у соседних.
+  */
+  const verdictCounts = useMemo(() => {
+    const counts: Record<TenderVerdict, number> = { RECOMMENDED: 0, MANUAL_REVIEW: 0, NOT_RECOMMENDED: 0 };
+    for (const hit of searchRows(rows, { ...filters, verdict: "ALL" })) {
+      // Вне региона и цены профиля поиска — не считаем, пока они скрыты: иначе
+      // счётчики говорили о 329 закупках при 26 показанных.
+      if (!showExcluded && profileLimitIds !== null && !profileLimitIds.has(hit.row.tender.id)) continue;
+      counts[hit.row.analysis.verdict] = (counts[hit.row.analysis.verdict] ?? 0) + 1;
+    }
+    return counts;
+  }, [rows, filters, showExcluded, profileLimitIds]);
 
   // Счётчики переключателя закона: сколько закупок даст каждый закон при
   // остальных текущих фильтрах. Сам закон в расчёте не участвует — иначе
@@ -155,10 +301,14 @@ export function TendersView() {
   /*
     Порядок выдачи выводится, а не хранится в фильтрах.
 
-    Как только задан запрос, выдачу определяет релевантность: ни Fit Score, ни
-    свежесть не знают про совпадение слов и поставили бы выше закупку, где
-    нужного слова нет вовсе. Осознанный выбор пользователя (цена, срок,
-    название) при этом не перебивается — подменяется только порядок по умолчанию.
+    По умолчанию — Fit Score: выдача уже отобрана по словам запроса, и внутри
+    неё первыми идут закупки, которые лучше всего подходят компании (регион,
+    цена, лицензии, опыт). Совпадение слов решает, попала ли закупка в
+    выдачу, а не её место в ней: первый слой находит, второй — ранжирует.
+    Осознанный выбор пользователя (цена, срок, название, свежесть) не
+    перебивается. «По релевантности» без запроса бессмысленна и читается как
+    Fit Score; «по свежести» при запросе читается как релевантность, потому
+    что свежесть партии про запрос ничего не знает.
 
     Держать это в состоянии означало бы помнить, кто и когда переключил поле:
     снятие чипа поиска, применение профиля и «Сбросить» оставляли бы сортировку
@@ -166,8 +316,7 @@ export function TendersView() {
     которой в таблице уже нет.
   */
   const effectiveSortField: SortField =
-    (filters.sortField === "fitScore" || filters.sortField === "freshness") &&
-    textQuery !== null
+    filters.sortField === "freshness" && textQuery !== null
       ? "relevance"
       : filters.sortField === "relevance" && textQuery === null
         ? "fitScore"
@@ -290,15 +439,16 @@ export function TendersView() {
     setFilters({ ...defaultFilters });
   }, [appliedProfileName, loading, page.total]);
 
-  /*
-    Заполнен ли профиль настолько, чтобы соответствие что-то означало. Читаем
-    один раз при монтировании: профиль правят на другом экране, и между
-    переходами компонент пересоздаётся.
-  */
-  const [subjectKnown, setSubjectKnown] = useState(true);
-  useEffect(() => {
-    setSubjectKnown(profileDescribesSubject(companyProfileRepository.get()));
-  }, []);
+  /** Первые закупки выдачи для проверки моделью: токены растут линейно. */
+  const assistCandidates = useMemo(
+    () =>
+      sorted.slice(0, 30).map((hit) => ({
+        id: hit.row.tender.id,
+        subject: hit.row.tender.subject,
+        customer: hit.row.tender.customerName,
+      })),
+    [sorted],
+  );
 
   const chips = useMemo(() => activeFilterChips(filters), [filters]);
 
@@ -343,6 +493,50 @@ export function TendersView() {
     setFilters((f) => ({ ...f, ...filtersFromSearchProfile(sp) }));
   };
 
+  /*
+    Где искать на площадках. Первым берётся регион, который человек задал в
+    ленте; нет — регионы применённого профиля поиска; нет — приоритетные
+    регионы компании. Без региона поиск идёт по всей России, и по небольшому
+    региону находились единицы (разбор 05.10.2026).
+  */
+  const liveRegions = useMemo(() => {
+    const fromFilters = [filters.region, ...filters.regions].filter((r) => r.trim() !== "");
+    if (fromFilters.length > 0) return fromFilters;
+    if (appliedProfile !== null && appliedProfile.regions.length > 0) return appliedProfile.regions;
+    return priorityRegions;
+  }, [filters.region, filters.regions, appliedProfile, priorityRegions]);
+
+  // Своего профиля нет, человек ничего не искал и не выбирал — спрашиваем, что он ищет.
+  const needsProfile =
+    !showAll &&
+    textQuery === null &&
+    chips.length === 0 &&
+    !searchProfiles.some((p) => p.keywords.length > 0);
+
+  /** Дождаться поиска на площадках, запущенного из «Что вы ищете?», и перечитать ленту. */
+  const waitForFirstSearch = async (jobId: string): Promise<void> => {
+    const until = Date.now() + FIRST_SEARCH_WAIT_MS;
+    while (Date.now() < until) {
+      await new Promise((resolve) => setTimeout(resolve, 10_000));
+      try {
+        const state = await searchAssistApiService.liveStatus(jobId);
+        if (state.status === "completed" || state.failed) {
+          setFirstSearch(
+            state.failed
+              ? "Поиск на площадках не удался. Ваши закупки соберутся при ближайшем плановом сборе."
+              : null,
+          );
+          await reload();
+          return;
+        }
+      } catch {
+        // Сбой опроса — пробуем ещё раз до конца ожидания.
+      }
+    }
+    setFirstSearch(null);
+    await reload();
+  };
+
   if (error) return <ErrorState message={error} onRetry={reload} />;
 
   return (
@@ -357,6 +551,59 @@ export function TendersView() {
               ? "Загрузка…"
               : `Найдено ${page.total} из ${rows.length} — ${sortExplanations[effectiveSortField]}`}
           </p>
+          {!loading && textQuery === null && (
+            <div className="mt-2 flex flex-wrap items-center gap-2" role="group" aria-label="Порядок выдачи">
+              <span className="text-[13.5px] text-faint">Порядок:</span>
+              {(
+                [
+                  { field: "fitScore", label: "Самые подходящие" },
+                  { field: "freshness", label: "Сначала новые" },
+                ] as const
+              ).map(({ field, label }) => {
+                const active = effectiveSortField === field;
+                return (
+                  <button
+                    key={field}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => setFilters((f) => ({ ...f, sortField: field, sortDir: "desc", page: 1 }))}
+                    className={cn(
+                      "rounded-full border px-3 py-1 text-[13.5px] transition-colors",
+                      active
+                        ? "border-accent-line bg-accent-subtle text-accent-fg"
+                        : "border-border bg-panel text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {!loading && (
+            <div className="mt-2 flex flex-wrap items-center gap-2" role="group" aria-label="Оценка по профилю компании">
+              <span className="text-[13.5px] text-faint">По профилю компании:</span>
+              {(["RECOMMENDED", "MANUAL_REVIEW", "NOT_RECOMMENDED"] as const).map((v) => {
+                const active = filters.verdict === v;
+                return (
+                  <button
+                    key={v}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => setFilters((f) => ({ ...f, verdict: active ? "ALL" : v, page: 1 }))}
+                    className={cn(
+                      "rounded-full border px-3 py-1 text-[13.5px] transition-colors",
+                      active
+                        ? "border-accent-line bg-accent-subtle text-accent-fg"
+                        : "border-border bg-panel text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {verdictLabels[v]}: {verdictCounts[v]}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
         {/*
           Вход на страницу своей закупки: из меню она убрана (это не ежедневное
@@ -417,7 +664,7 @@ export function TendersView() {
       {!subjectKnown && (
         <p className="muted">
           Профиль компании пока пуст, поэтому соответствие не считается — лента
-          показана целиком, по свежести.{" "}
+          показана целиком.{" "}
           <Link href="/settings/profile" className="text-accent-fg hover:underline">
             Заполнить профиль
           </Link>
@@ -426,7 +673,7 @@ export function TendersView() {
 
       {appliedProfileName !== null && chips.length > 0 && (
         <p className="muted">
-          Показаны закупки по профилю «{appliedProfileName}».{" "}
+          Показаны закупки по словам профиля «{appliedProfileName}» — найдено по всей России.{" "}
           <button
             type="button"
             className="text-accent-fg hover:underline"
@@ -436,6 +683,27 @@ export function TendersView() {
             }}
           >
             Показать все
+          </button>
+        </p>
+      )}
+
+      {excluded.total > 0 && (
+        <p className="muted" role="status">
+          {showExcluded
+            ? `Показаны и скрытые закупки (${excluded.total}).`
+            : `Скрыто как не подходящее: ${excluded.total}`}
+          {excluded.byLimits.size > 0 &&
+            appliedProfile !== null &&
+            ` — ${excluded.byLimits.size} вне условий профиля поиска (${profileNarrowing(appliedProfile).join("; ")})`}
+          {excluded.byFit.size > 0 &&
+            ` — ${excluded.byFit.size} не подходят по профилю компании (регион, цена, лицензии)`}
+          .{" "}
+          <button
+            type="button"
+            className="text-accent-fg hover:underline"
+            onClick={() => setShowExcluded((v) => !v)}
+          >
+            {showExcluded ? "Скрыть" : "Показать скрытые"}
           </button>
         </p>
       )}
@@ -496,8 +764,53 @@ export function TendersView() {
         onApplyProfile={applyProfile}
       />
 
+      <SearchAssistBar
+        regions={liveRegions}
+        query={filters.search}
+        keywords={filters.searchKeywords}
+        candidates={assistCandidates}
+        companyNote={companyNote}
+        verdicts={verdicts}
+        hideNo={hideModelNo}
+        onAddKeywords={(terms) =>
+          patch({ searchKeywords: [...filters.searchKeywords, ...terms], page: 1 })
+        }
+        onVerdicts={setVerdicts}
+        onHideNo={setHideModelNo}
+        // Живой поиск дописал закупки в базу: лента перечитывает её целиком.
+        onLiveDone={() => void reload()}
+      />
+
+      {firstSearch !== null && (
+        <p className="muted" role="status">
+          {firstSearch}
+        </p>
+      )}
+
       {loading ? (
         <LoadingSkeleton rows={8} />
+      ) : needsProfile ? (
+        <QuickProfileCard
+          onShowAll={() => {
+            setShowAll(true);
+            try {
+              sessionStorage.setItem(SHOW_ALL_KEY, "1");
+            } catch {
+              // Без памяти вкладки выбор продержится до перезагрузки.
+            }
+          }}
+          onSaved={(profile, outcome) => {
+            setSearchProfiles((prev) => [...prev, profile]);
+            setAppliedProfileName(profile.name);
+            setFilters((f) => ({ ...f, ...searchWordsFromProfile(profile) }));
+            if (outcome.jobId === null) {
+              setFirstSearch(outcome.problem);
+              return;
+            }
+            setFirstSearch("Ищу ваши закупки на площадках — лента обновится сама, обычно за пару минут.");
+            void waitForFirstSearch(outcome.jobId);
+          }}
+        />
       ) : page.items.length === 0 ? (
         <div className="card">
           <EmptyState
@@ -518,6 +831,7 @@ export function TendersView() {
           sortDir={filters.sortDir}
           onSort={onSort}
           searchInfo={searchInfo}
+          modelNotes={verdicts}
           freshnessInfo={freshnessInfo}
           footer={
             <div className="flex flex-wrap items-center justify-between gap-3">

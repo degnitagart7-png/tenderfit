@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { CompanyProfile } from "@/domain/entities";
 import type { TenderLaw } from "@/domain/enums";
 import type { KonturPressPlan } from "@/domain/konturPressPlan";
@@ -97,6 +97,11 @@ const IDLE_SYNC_STATE: TenderSyncState = {
  * не вызывается: на проде он всегда падал, а интерфейс показывал это как
  * «Новые закупки не загрузились».
  */
+/** Через сколько данные считаются устаревшими при возвращении на вкладку. */
+export const BACKGROUND_REFRESH_AFTER_MS = 5 * 60_000;
+/** Как часто лента обновляется сама, пока вкладка видна. */
+export const BACKGROUND_REFRESH_EVERY_MS = 10 * 60_000;
+
 export function useTenderData(): TenderDataState & {
   /** Перечитывает данные и возвращает свежий список — ждать, а не «вызвать и забыть». */
   reload: () => Promise<TenderRow[]>;
@@ -113,14 +118,22 @@ export function useTenderData(): TenderDataState & {
 
   const [syncState, setSyncState] = useState<TenderSyncState>(IDLE_SYNC_STATE);
 
-  const load = useCallback(async (): Promise<TenderRow[]> => {
-    setState((s) => ({ ...s, loading: true, error: null }));
+  const lastLoadedAt = useRef(0);
+
+  /**
+   * Загрузка ленты. `silent` — фоновое обновление: без заглушки загрузки, и
+   * сбой не заменяет уже показанную ленту ошибкой.
+   */
+  const load = useCallback(async (silent = false): Promise<TenderRow[]> => {
+    if (!silent) setState((s) => ({ ...s, loading: true, error: null }));
     try {
       const profile = companyProfileRepository.get();
       const rows = await tenderApiService.getRows(profile);
+      lastLoadedAt.current = Date.now();
       setState({ profile, rows, loading: false, error: null });
       return rows;
     } catch (err) {
+      if (silent) return [];
       setState((s) => ({
         ...s,
         loading: false,
@@ -227,6 +240,29 @@ export function useTenderData(): TenderDataState & {
 
   useEffect(() => {
     void load();
+  }, [load]);
+
+  /*
+    Свежие закупки без перезагрузки страницы. Сборщик приносит новое раз в два
+    часа и по кнопке поиска, а лента загружалась один раз при открытии: вкладка,
+    открытая с утра, новых закупок не показывала (замечание 05.10.2026).
+    Обновляем тихо: при возвращении на вкладку, если данные старше пяти минут,
+    и раз в десять минут, пока вкладка видна.
+  */
+  useEffect(() => {
+    const refreshIfStale = () => {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - lastLoadedAt.current < BACKGROUND_REFRESH_AFTER_MS) return;
+      void load(true);
+    };
+    const timer = window.setInterval(refreshIfStale, BACKGROUND_REFRESH_EVERY_MS);
+    window.addEventListener("focus", refreshIfStale);
+    document.addEventListener("visibilitychange", refreshIfStale);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshIfStale);
+      document.removeEventListener("visibilitychange", refreshIfStale);
+    };
   }, [load]);
 
   return { ...state, reload: () => load(), syncKontur, syncState };

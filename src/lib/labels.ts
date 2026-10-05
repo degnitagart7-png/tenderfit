@@ -367,6 +367,10 @@ export const closingSoonLabel = `Подача закрывается в ближ
 )}`;
 
 /** Короткая подпись для чипа активного фильтра — места там мало. */
+/** Подпись переключателя: что именно он убирает, а не просто «закрытые». */
+export const hideClosedLabel = "Скрыть закрытые (срок подачи прошёл)";
+export const hideClosedChipLabel = "Без закрытых";
+
 export const closingSoonChipLabel = `Подача ≤ ${URGENT_DEADLINE_DAYS} дн.`;
 
 /** Переключатели в духе Контур.Закупок: что делать с неполной ценой. */

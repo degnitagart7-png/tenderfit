@@ -1,5 +1,6 @@
 "use client";
 
+import type { RerankVerdict } from "@/domain/searchAssist";
 import { Fragment, type ReactNode } from "react";
 import Link from "next/link";
 import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
@@ -80,6 +81,13 @@ export interface RowSearchInfo {
    */
   documentOnly: boolean;
 }
+
+/** Подписи оценок модели: коротко, чтобы строка не росла. */
+const MODEL_FIT_LABELS: Record<RerankVerdict["fit"], { text: string; tone: string }> = {
+  yes: { text: "подходит", tone: "text-olive-fg" },
+  maybe: { text: "возможно", tone: "text-mustard-fg" },
+  no: { text: "не подходит", tone: "text-brick-fg" },
+};
 
 /*
   Плотная таблица «терминального» вида: table-fixed с фиксированными ширинами,
@@ -163,6 +171,7 @@ export function TenderTable({
   sortDir,
   onSort,
   searchInfo,
+  modelNotes,
   freshnessInfo,
   footer,
 }: {
@@ -172,6 +181,8 @@ export function TenderTable({
   onSort: (field: SortField) => void;
   /** Результаты поиска по `tender.id`; отсутствует, когда запроса нет. */
   searchInfo?: Map<string, RowSearchInfo>;
+  /** Оценки модели по смыслу, по идентификатору закупки: только когда человек их запросил. */
+  modelNotes?: Record<string, RerankVerdict> | null;
   /** Слои свежести по `tender.id`; отсутствует, когда порядок не по свежести. */
   freshnessInfo?: Map<string, FreshnessCell>;
   /**
@@ -342,6 +353,20 @@ export function TenderTable({
                   {info?.snippet && (
                     <p className="mt-1 line-clamp-2 text-[12.5px] leading-snug text-muted-foreground">
                       {info.snippet}
+                    </p>
+                  )}
+                  {modelNotes?.[row.tender.id] !== undefined && (
+                    <p
+                      className="mt-1 text-[12.5px] leading-snug text-muted-foreground"
+                      data-testid="model-note"
+                    >
+                      <span className="text-faint">Модель: </span>
+                      <span
+                        className={`font-medium ${MODEL_FIT_LABELS[modelNotes[row.tender.id]!.fit].tone}`}
+                      >
+                        {MODEL_FIT_LABELS[modelNotes[row.tender.id]!.fit].text}
+                      </span>
+                      {modelNotes[row.tender.id]!.reason !== "" && ` — ${modelNotes[row.tender.id]!.reason}`}
                     </p>
                   )}
                   {info?.documentOnly && (

@@ -107,13 +107,15 @@
  */
 import { config } from "dotenv";
 import { resolve } from "node:path";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { TenderSourceAdapter } from "../src/adapters/types";
 import type { KonturTenderSourceAdapter } from "../src/adapters/tender-source/konturTenderSourceAdapter";
 import type { TektorgTenderSourceAdapter } from "../src/adapters/tender-source/tektorgTenderSourceAdapter";
 import type { RoseltorgTenderSourceAdapter } from "../src/adapters/tender-source/roseltorgTenderSourceAdapter";
 import type { FabrikantTenderSourceAdapter } from "../src/adapters/tender-source/fabrikantTenderSourceAdapter";
+import type { EisTenderSourceAdapter } from "../src/adapters/tender-source/eisTenderSourceAdapter";
+import { DEFAULT_OKPD2_BUDGET, planOkpd2Enrichment } from "../src/domain/okpd2Enrichment";
 import {
   decideKonturSync,
   konturLastPaidSearchAt,
@@ -125,6 +127,57 @@ import {
 import { SOURCE_BINDINGS } from "../src/services/tenderSourceRegistry";
 import { defaultSources, slowTrackSources, syncableSources } from "../src/domain/sources";
 import { decideTrack, slowTrackIntervalHours } from "../src/domain/sourceCadence";
+import {
+  KEEP_LIVE_ROWS_FILTER,
+  LIVE_ORIGIN,
+  buildLiveProfile,
+  isLiveExpired,
+  liveExpiryCutoff,
+  liveRawData,
+  normalizeLiveQuery,
+  normalizeLiveRegions,
+  normalizeLiveSynonyms,
+} from "../src/domain/liveSearch";
+import { DEMAND_TTL_DAYS, buildDemandProfiles, type DemandRow } from "../src/domain/demand";
+import { isRelevantToKeywords } from "../src/domain/relevance";
+import { isClosedLongAgo } from "../src/domain/staleTender";
+import { runPool } from "../src/lib/runPool";
+import { resolveLlmEndpoint } from "../src/services/llmGateway";
+import { createSearchAssist, llmChat } from "../src/services/searchAssistService";
+import { createFitCache, judgeBySense, type Judge } from "../src/services/semanticGate";
+
+/** Сколько закупок пишется в базу одновременно. */
+const SAVE_CONCURRENCY = 8;
+
+/** Сколько закупок берёт у ЕИС живой поиск: три страницы по сто. */
+const LIVE_EIS_LIMIT = 300;
+/**
+ * Граница даты размещения для ЕИС. Давние извещения с вечным статусом «Подача
+ * заявок» без неё занимали почти всю выдачу: в Бурятии по «ремонту» из 300
+ * строк открытых было 15.
+ */
+const EIS_PUBLISHED_WITHIN_DAYS = 60;
+/**
+ * Обход всего региона: все открытые закупки, размещённые за этот срок. Во всей
+ * ЕИС с заказчиком из Бурятии их за месяц 291 (05.10.2026) — три-четыре
+ * страницы. Поиск по слову находил из них единицы (15 по «ремонту», 7 по
+ * «строительству»): заказчик пишет «устройство», «благоустройство», «монтаж».
+ * Поэтому регион берётся целиком, а отбор по смыслу делается у нас.
+ */
+const REGION_SWEEP_DAYS = 45;
+const REGION_SWEEP_PAGES = 6;
+/** Сколько новых закупок за прогон модель оценивает по смыслу (остальное — в следующий). */
+const SENSE_MAX_PER_RUN = 600;
+/** Минимум закупок на слово у ЕИС в плановом сборе. */
+const PLANNED_EIS_MIN_LIMIT = 50;
+/** Страниц по сто строк. */
+const LIVE_EIS_PAGES = 3;
+import {
+  parseServerProfiles,
+  pickSyncProfiles,
+  type CollectorProfile,
+  type ServerProfile,
+} from "../src/domain/syncProfiles";
 import { runDocumentFetch } from "./fetch-tender-documents";
 // Расшифровка ошибок общая с воркером: те же коды и та же подпись «источник не
 // пускает наш адрес» в обоих логах, иначе причину сбоя пришлось бы узнавать
@@ -588,15 +641,125 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const profiles = syncConfig.profiles.filter((p) => p.enabled);
+  /*
+    Живой поиск: запрос человека с открытой страницы вместо профилей сервера.
+
+    Режим включает воркер, когда берёт задание с `payload.liveQuery`. Запрос
+    чистится ещё раз и здесь: переменная окружения — граница доверия, и
+    скрипт не должен полагаться на то, что вызывающий уже всё проверил.
+    Непригодный запрос — выход с кодом 2, а не тихий откат к плановым профилям:
+    иначе задание «найти юристов» молча превратилось бы в полный плановый
+    прогон со всеми его побочными эффектами.
+  */
+  const rawLiveQuery = (process.env["SYNC_LIVE_QUERY"] ?? "").trim();
+  const liveQuery = rawLiveQuery === "" ? null : normalizeLiveQuery(rawLiveQuery);
+  if (rawLiveQuery !== "" && liveQuery === null) {
+    console.error("SYNC_LIVE_QUERY задан, но запрос непригоден: прогон отменён.");
+    process.exit(2);
+  }
+  const liveMode = liveQuery !== null;
+  // Регионы живого поиска: переменная окружения — граница доверия, чистим заново.
+  let liveSynonyms: string[] = [];
+  try {
+    liveSynonyms = normalizeLiveSynonyms(liveQuery ?? "", JSON.parse(process.env["SYNC_LIVE_KEYWORDS"] ?? "[]"));
+  } catch {
+    liveSynonyms = [];
+  }
+  let liveRegions: string[] = [];
+  try {
+    liveRegions = normalizeLiveRegions(JSON.parse(process.env["SYNC_LIVE_REGIONS"] ?? "[]"));
+  } catch {
+    liveRegions = [];
+  }
+
+  /*
+    Профили сервера: владелец отправляет свои из настроек, и они заменяют
+    зашитые в файле. Таблицы нет или она пуста — работает файл. Чтение не
+    должно ронять прогон: сбой базы здесь — повод назвать причину и взять файл.
+  */
+  let serverProfiles: ServerProfile[] = [];
+  if (!liveMode) {
+    const { data, error } = await supabase.from("sync_profiles").select("*");
+    if (error) {
+      const missing = error.code === "42P01" || error.code === "PGRST205";
+      console.log(
+        missing
+          ? "Профилей сервера нет (таблица sync_profiles не создана): беру профили из файла."
+          : `Профили сервера прочитать не удалось (${error.message}): беру профили из файла.`,
+      );
+    } else {
+      const parsed = parseServerProfiles(
+        (data ?? []).map((row: Record<string, unknown>) => ({
+          name: row["name"],
+          laws: row["laws"],
+          keywords: row["keywords"],
+          okpd2Codes: row["okpd2_codes"] ?? [],
+          minPrice: row["min_price"] === null ? null : Number(row["min_price"]),
+          maxPrice: row["max_price"] === null ? null : Number(row["max_price"]),
+          regions: row["regions"] ?? [],
+          enabled: row["enabled"],
+        })),
+      );
+      if (parsed.ok) serverProfiles = parsed.profiles;
+      else console.log(`Профили сервера некорректны (${parsed.error}): беру профили из файла.`);
+    }
+  }
+
+  /*
+    Спрос посетителей: темы, которые ждут пользователи сервиса. Сбор идёт по
+    их объединению (одна тема — один запрос к площадкам), а тема, которую
+    никто не открывал дольше срока, вычищается. Таблицы нет — спроса нет, это
+    не ошибка прогона.
+  */
+  let demandProfiles: CollectorProfile[] = [];
+  if (!liveMode) {
+    const { data, error } = await supabase.from("search_demand").select("*").limit(20_000);
+    if (error) {
+      const missing = error.code === "42P01" || error.code === "PGRST205";
+      if (!missing) console.log(`Спрос посетителей прочитать не удалось (${error.message}): пропускаю.`);
+    } else {
+      const maxKeywords = Number(process.env["SYNC_DEMAND_MAX_KEYWORDS"] ?? "30");
+      // Слово → регионы, в которых его уже собирают профили владельца ([] — вся Россия).
+      const owned = new Map<string, string[]>();
+      for (const p of serverProfiles.filter((x) => x.enabled)) {
+        for (const k of p.keywords.map((w) => w.toLowerCase())) {
+          const prev = owned.get(k);
+          if (prev !== undefined && prev.length === 0) continue;
+          owned.set(k, p.regions.length === 0 ? [] : [...(prev ?? []), ...p.regions]);
+        }
+      }
+      demandProfiles = buildDemandProfiles((data ?? []) as DemandRow[], {
+        nowMs: Date.now(),
+        maxKeywords: Number.isFinite(maxKeywords) && maxKeywords > 0 ? maxKeywords : 30,
+        exclude: owned,
+      });
+      const staleBefore = new Date(Date.now() - DEMAND_TTL_DAYS * 86_400_000).toISOString();
+      if (!dryRun) await supabase.from("search_demand").delete().lt("last_seen_at", staleBefore);
+      const topics = demandProfiles.reduce((n, p) => n + p.keywords.length, 0);
+      console.log(`Спрос посетителей: тем к сбору ${topics} (строк в таблице ${(data ?? []).length}).`);
+    }
+  }
+
+  const profiles: SyncProfile[] = liveMode
+    ? [buildLiveProfile(liveQuery, liveRegions, liveSynonyms) as SyncProfile]
+    : (pickSyncProfiles(syncConfig.profiles, serverProfiles, demandProfiles) as SyncProfile[]);
   if (profiles.length === 0) {
-    console.log("Нет включённых профилей в sync-profiles.json — нечего синхронизировать.");
+    console.log("Нет включённых профилей — нечего синхронизировать.");
     return;
+  }
+  if (serverProfiles.length > 0 || demandProfiles.length > 0) {
+    console.log("Профили из файла не используются: сбор идёт по профилям владельца и спросу посетителей.");
   }
 
   console.log("Синхронизация закупок → Supabase по профилям поиска");
   console.log(`Профилей: ${profiles.length} | ${profiles.map((p) => p.name).join(", ")}`);
   if (dryRun) console.log("РЕЖИМ --dry-run: данные в Supabase не записываются");
+  if (liveMode) {
+    console.log(
+      `РЕЖИМ живого поиска: «${liveQuery}»${liveRegions.length > 0 ? ` (регионы: ${liveRegions.join(", ")})` : ""}${liveSynonyms.length > 0 ? ` (близкие слова: ${liveSynonyms.join(", ")})` : ""}. Строки ничего не удаляют, найденное помечается и ` +
+        "переживает плановую очистку; платные источники и очередь документов не затрагиваются.",
+    );
+  }
   if (onlySources) console.log(`РЕЖИМ --sources: опрашиваем только ${onlySources.join(", ")}`);
   console.log();
 
@@ -685,7 +848,7 @@ async function main(): Promise<void> {
   //
   // Пропущенный источник не затирается: очистка идёт только для тех, кто в этот
   // раз вернул закупки. Явный --sources и ручной запуск трек не проверяют.
-  if (!onlySources && !allTracks) {
+  if (!onlySources && !allTracks && !liveMode) {
     const intervalHours = slowTrackIntervalHours(process.env["SYNC_SLOW_INTERVAL_HOURS"]);
     if (intervalHours > 0) {
       for (const source of slowTrackSources()) {
@@ -850,6 +1013,12 @@ async function main(): Promise<void> {
       }
     }
 
+    /*
+      Площадки с карточками (ТЭК-Торг, Росэлторг, Фабрикант) тратят запрос на
+      каждую найденную процедуру, поэтому в живом поиске им уходит только сам
+      запрос, а близкие слова от модели — дешёвым ЕИС и Сбербанк-АСТ.
+    */
+    const cardKeywords = liveMode ? profile.keywords.slice(0, 1) : profile.keywords;
     for (const keyword of profile.keywords) {
       if (wantEis && eisAdapter) {
         const { found } = await collectFrom(
@@ -862,10 +1031,19 @@ async function main(): Promise<void> {
               minPrice: profile.minPrice ?? null,
               maxPrice: profile.maxPrice ?? null,
               okpd2Codes: profile.okpd2Codes,
-              // profile.regions сюда намеренно не передаётся: ЕИС его
-              // игнорирует, а параметр, уходящий впустую, создавал бы ложное
-              // впечатление, что фильтр работает. Предупреждение — в логе выше.
-              limit: profile.limitPerKeyword ?? 10,
+              // Регион уходит кодом: ЕИС фильтрует по региону заказчика
+              // (customerPlace), и найденному проставляется этот регион.
+              regions: profileRegions(profile),
+              // Живой поиск: только открытые закупки и целая страница ЕИС. Из сотни
+              // новейших открытых проверка по смыслу оставляет настоящие, а на
+              // 25 строк уходило слишком много мусора.
+              // Плановый сбор тоже берёт открытые закупки, новейшие вперёд, и не
+              // меньше пятидесяти на слово: десять самых свежо обновлённых
+              // (закрытых и случайных) не были выдачей по теме.
+              limit: liveMode ? LIVE_EIS_LIMIT : Math.max(profile.limitPerKeyword ?? 10, PLANNED_EIS_MIN_LIMIT),
+              onlyOpen: true,
+              publishedWithinDays: EIS_PUBLISHED_WITHIN_DAYS,
+              maxPages: liveMode ? LIVE_EIS_PAGES : undefined,
             }),
           unique,
         );
@@ -950,11 +1128,11 @@ async function main(): Promise<void> {
     if (wantTektorg && tektorgAdapter) {
       const { found, ok } = await collectFrom(
         "ТЭК-Торг",
-        profile.keywords.join(", ") || "вся секция",
+        cardKeywords.join(", ") || "вся секция",
         () =>
           tektorgAdapter.fetchTenders({
             laws: TEK_TORG_LAWS,
-            keywords: profile.keywords,
+            keywords: cardKeywords,
             minPrice: profile.minPrice ?? null,
             maxPrice: profile.maxPrice ?? null,
             // Регион уходит в адаптер и применяется к полученной выдаче: в запросе
@@ -962,7 +1140,7 @@ async function main(): Promise<void> {
             regions: regionNames.length > 0 ? regionNames : undefined,
             // ОКПД2 намеренно не передаётся: адаптер по кодам не отбирает, и
             // параметр, уходящий впустую, создавал бы ложное впечатление фильтра.
-            limit: (profile.limitPerKeyword ?? 10) * Math.max(1, profile.keywords.length),
+            limit: (profile.limitPerKeyword ?? 10) * Math.max(1, cardKeywords.length),
           }),
         unique,
       );
@@ -1000,11 +1178,11 @@ async function main(): Promise<void> {
     if (wantRoseltorg && roseltorgAdapter) {
       const { found, ok } = await collectFrom(
         "Росэлторг",
-        profile.keywords.join(", ") || "все секции",
+        cardKeywords.join(", ") || "все секции",
         () =>
           roseltorgAdapter.fetchTenders({
             laws: ROSELTORG_LAWS,
-            keywords: profile.keywords,
+            keywords: cardKeywords,
             minPrice: profile.minPrice ?? null,
             maxPrice: profile.maxPrice ?? null,
             // Региона в форме поиска нет, зато он напечатан в строке выдачи:
@@ -1012,7 +1190,7 @@ async function main(): Promise<void> {
             regions: regionNames.length > 0 ? regionNames : undefined,
             // ОКПД2 площадка в выдаче не печатает вовсе: передавать код не во что,
             // а параметр, уходящий впустую, создавал бы ложное впечатление фильтра.
-            limit: (profile.limitPerKeyword ?? 10) * Math.max(1, profile.keywords.length),
+            limit: (profile.limitPerKeyword ?? 10) * Math.max(1, cardKeywords.length),
           }),
         unique,
       );
@@ -1058,11 +1236,11 @@ async function main(): Promise<void> {
     if (wantFabrikant && fabrikantAdapter) {
       const { found, ok } = await collectFrom(
         "Фабрикант",
-        profile.keywords.join(", ") || "все секции",
+        cardKeywords.join(", ") || "все секции",
         () =>
           fabrikantAdapter.fetchTenders({
             laws: FABRIKANT_LAWS,
-            keywords: profile.keywords,
+            keywords: cardKeywords,
             minPrice: profile.minPrice ?? null,
             maxPrice: profile.maxPrice ?? null,
             // Региона в форме поиска нет, а `customer_region_ids[]` фильтрует по
@@ -1075,7 +1253,7 @@ async function main(): Promise<void> {
             // `price_to` она принимает: не замерено, отбрасывает ли серверный
             // фильтр закупки «Без указания цены», а потерять их молча нельзя.
             // ОКПД2 площадка в выдаче не печатает: код передавать не во что.
-            limit: (profile.limitPerKeyword ?? 10) * Math.max(1, profile.keywords.length),
+            limit: (profile.limitPerKeyword ?? 10) * Math.max(1, cardKeywords.length),
           }),
         unique,
       );
@@ -1127,6 +1305,154 @@ async function main(): Promise<void> {
     }
   }
 
+  /*
+    Обход региона целиком (ЕИС): сначала все открытые закупки региона, затем
+    отбор по смыслу ниже — тем же правилом, каким ищет лента. Так находится то,
+    что заказчик назвал другими словами, а поиск по слову пропускал.
+  */
+  /** Закупки, взятые обходом региона, и тема, по которой их судить. */
+  const sweepTopic = new Map<string, string>();
+  /** Слова профилей, под которые закупка отобрана моделью: лента покажет её по ним. */
+  const senseKeywords = new Map<string, string[]>();
+  if (eisAdapter && !unreachable.includes("EIS") && (!onlySources || onlySources.includes("EIS"))) {
+    const sweptRegions = new Set<string>();
+    for (const profile of profiles) {
+      const regions = profileRegions(profile).filter((r) => !sweptRegions.has(r.toLowerCase()));
+      if (regions.length === 0) continue;
+      for (const r of regions) sweptRegions.add(r.toLowerCase());
+      // Тема — все профили этого региона: что в нём ищут.
+      const regionProfiles = profiles.filter((p) =>
+        profileRegions(p).some((r) => regions.some((x) => x.toLowerCase() === r.toLowerCase())),
+      );
+      const topic =
+        liveMode && liveQuery !== null
+          ? [liveQuery, ...liveSynonyms].join(", ")
+          : regionProfiles.map((p) => `${p.name}: ${p.keywords.join(", ")}`).join("; ");
+      let swept: Tender[] = [];
+      const { found } = await collectFrom(
+        "ЕИС",
+        `все открытые закупки: ${regions.join(", ")}`,
+        async () => {
+          swept = await eisAdapter.fetchTenders({
+            laws: ["FZ_44", "FZ_223"],
+            keywords: [],
+            regions,
+            onlyOpen: true,
+            publishedWithinDays: REGION_SWEEP_DAYS,
+            maxPages: REGION_SWEEP_PAGES,
+            limit: REGION_SWEEP_PAGES * 100,
+          });
+          return swept;
+        },
+        unique,
+      );
+      for (const t of swept) sweepTopic.set(t.regNumber, topic);
+      const topicWords =
+        liveMode && liveQuery !== null
+          ? [liveQuery, ...liveSynonyms]
+          : regionProfiles.flatMap((p) => p.keywords);
+      for (const t of swept) senseKeywords.set(t.regNumber, topicWords.map((w) => w.toLowerCase()));
+      perSource.set("EIS", (perSource.get("EIS") ?? 0) + found);
+      queriedSources.add("EIS");
+    }
+  }
+
+  /*
+    Закупки региона судит модель, по смыслу: слова профиля плохо описывают
+    сферу (по «строительство, ремонт» проходил ремонт автобусов, а
+    благоустройство и сети водоснабжения выпадали). Решения кэшируются на диске,
+    поэтому прогон платит только за новые закупки. Модель недоступна — эти
+    закупки отбираются словами, как остальные.
+  */
+  const senseFit = new Map<string, "yes" | "maybe" | "no">();
+  if (sweepTopic.size > 0) {
+    let llmReady = true;
+    try {
+      resolveLlmEndpoint();
+    } catch {
+      llmReady = false;
+      console.log("По смыслу: модель не настроена (LLM_*), закупки региона отбираются словами.");
+    }
+    if (llmReady) {
+      // logs/ — единственная папка, куда сборщику разрешена запись (ReadWritePaths
+      // в tenderfit-worker.service); выкладка её не трогает, кэш переживает обновления.
+      const cacheDir = process.env["SYNC_CACHE_DIR"] ?? resolve(__dirname, "..", "logs");
+      const cachePath = resolve(cacheDir, "tenderfit-fit-cache.json");
+      let raw: string | undefined;
+      try {
+        raw = readFileSync(cachePath, "utf-8");
+      } catch {
+        raw = undefined;
+      }
+      const cache = createFitCache(raw);
+      const assist = createSearchAssist(llmChat);
+      const judge: Judge = async (topic, batch) => {
+        const { verdicts } = await assist.rerank({ query: topic, candidates: batch });
+        return Object.fromEntries(Object.entries(verdicts).map(([id, v]) => [id, v.fit]));
+      };
+      const byTopic = new Map<string, Tender[]>();
+      for (const [regNumber, topic] of sweepTopic) {
+        const t = unique.get(regNumber);
+        if (t) byTopic.set(topic, [...(byTopic.get(topic) ?? []), t]);
+      }
+      for (const [topic, tenders] of byTopic) {
+        const decided = await judgeBySense({
+          topic,
+          items: tenders.map((t) => ({ id: t.regNumber, subject: t.subject, customer: t.customerName })),
+          judge,
+          cache,
+          limit: SENSE_MAX_PER_RUN,
+        });
+        for (const [id, fit] of decided) senseFit.set(id, fit);
+      }
+      try {
+        mkdirSync(cacheDir, { recursive: true });
+        writeFileSync(cachePath, cache.serialize(), "utf-8");
+      } catch (err) {
+        console.log(`По смыслу: кэш решений не сохранён (${describeError(err)}).`);
+      }
+      const values = [...senseFit.values()];
+      console.log(
+        `По смыслу (модель): решено ${values.length} из ${sweepTopic.size}; подходит ${values.filter((f) => f === "yes").length}, ` +
+          `возможно ${values.filter((f) => f === "maybe").length}, не подходит ${values.filter((f) => f === "no").length}.`,
+      );
+    }
+  }
+
+  /*
+    Отбор по смыслу. Площадка отдаёт всё, что показалось ей похожим: по запросу
+    «юридические услуги» ЕИС вернула оценку арестованного имущества, вывоз
+    отходов и питание участников форума — совпало слово «услуги» (прогон
+    05.10.2026). Такие находки в базу не идут: проверка та же, каким правилом
+    ищет лента, поэтому найденное не пропадёт из ленты, а мусор в неё не
+    попадёт. Живой поиск судит по полному запросу человека, плановый прогон —
+    по ключевым словам своих профилей.
+
+    Счётчик источника уменьшается вместе с отсевом: если площадка отдала только
+    мусор, очистка её старых записей будет пропущена («источник не вернул
+    новых закупок»), а не опустошит ленту.
+  */
+  {
+    const gateKeywords = liveMode && liveQuery !== null ? [liveQuery, ...liveSynonyms] : profiles.flatMap((p) => p.keywords);
+    const droppedBySource = new Map<TenderDataSource, number>();
+    for (const [regNumber, tender] of [...unique]) {
+      if (tender.dataSource === "KONTUR") continue;
+      // Закупку региона, по которой есть решение модели, судит модель: проходит
+      // только уверенное «подходит». «Возможно» вместе с совпавшими словами
+      // пропускало мебель, полигон ТКО и ремонт автобусов (проверено 05.10.2026).
+      const fit = senseFit.get(regNumber);
+      if (fit === undefined ? isRelevantToKeywords(tender, gateKeywords) : fit === "yes") continue;
+      unique.delete(regNumber);
+      droppedBySource.set(tender.dataSource, (droppedBySource.get(tender.dataSource) ?? 0) + 1);
+      perSource.set(tender.dataSource, Math.max(0, (perSource.get(tender.dataSource) ?? 0) - 1));
+    }
+    const droppedTotal = [...droppedBySource.values()].reduce((a, b) => a + b, 0);
+    if (droppedTotal > 0) {
+      const parts = [...droppedBySource].map(([source, count]) => `${source} ${count}`).join(", ");
+      console.log(`Отсеяно как не относящееся к запросу: ${droppedTotal} (${parts}).`);
+    }
+  }
+
   // Итог по источникам. Опрошенный источник печатает число найденного,
   // неопрошенный — причину: «0 новых закупок» и «источник выключен» выглядят
   // похоже, а означают разное, и подменять одно другим значит прятать причину.
@@ -1154,6 +1480,68 @@ async function main(): Promise<void> {
     console.log(`${source}: не опрашивался — ${notQueriedReason(source)}`);
   }
   console.log(`Уникальных закупок всего: ${unique.size}.`);
+
+  /*
+    ОКПД2 из карточек ЕИС. Выдача кода не печатает, и без него поиск по
+    классификатору («69.10») не работает ни у одной закупки. Сначала берётся
+    известное из базы: плановый прогон пересоздаёт строки источника, и
+    добытый в прошлый раз код пропал бы вместе со строкой. Остальное — из
+    карточек, не больше бюджета за прогон: сто пятьдесят карточек подряд —
+    это минуты и лишняя нагрузка на чужой сайт; что не успели, добирает
+    следующий прогон. Сбой карточки код не теряет и прогон не роняет.
+  */
+  // Тот же адаптер, что искал закупки, но с типом ЕИС: метод карточек есть
+  // только у него, а общий тип источника его не знает.
+  const eisCards = (eisAdapter as EisTenderSourceAdapter | null) ?? null;
+  /*
+    Живой поиск код не добирает: человек ждёт результата, а на карточки ЕИС
+    (одна-две страницы на закупку, три запроса в секунду) уходило сорок секунд
+    из девяноста. Код нужен поиску по классификатору, а живой поиск идёт по
+    словам. Плановый прогон добирает коды по своему бюджету.
+  */
+  if (eisCards && !liveMode) {
+    const budget = Number.parseInt(process.env["SYNC_OKPD2_BUDGET"] ?? "", 10);
+    const existing = new Map<string, string[]>();
+    const { data: known, error: knownError } = await supabase
+      .from("tenders")
+      .select("reg_number, okpd2_codes")
+      .not("okpd2_codes", "is", null);
+    if (knownError) {
+      console.log(`ОКПД2: известные коды не прочитаны (${knownError.message}), берём из карточек.`);
+    }
+    for (const row of (known ?? []) as { reg_number: string; okpd2_codes: string[] | null }[]) {
+      if (row.okpd2_codes && row.okpd2_codes.length > 0) existing.set(row.reg_number, row.okpd2_codes);
+    }
+
+    const plan = planOkpd2Enrichment({
+      tenders: [...unique.values()],
+      existing,
+      sources: ["EIS"],
+      budget: Number.isFinite(budget) && budget >= 0 ? budget : DEFAULT_OKPD2_BUDGET,
+    });
+
+    for (const [regNumber, codes] of plan.carry) {
+      const tender = unique.get(regNumber);
+      if (tender) unique.set(regNumber, { ...tender, okpd2Codes: codes });
+    }
+    let fetched = 0;
+    let empty = 0;
+    for (const regNumber of plan.fetch) {
+      const tender = unique.get(regNumber);
+      if (!tender) continue;
+      const codes = await eisCards.fetchOkpd2(tender);
+      if (codes.length > 0) {
+        unique.set(regNumber, { ...tender, okpd2Codes: codes });
+        fetched += 1;
+      } else {
+        empty += 1;
+      }
+    }
+    console.log(
+      `ОКПД2 (ЕИС): из прошлого прогона ${plan.carry.size}, из карточек ${fetched}, ` +
+        `кода нет или карточка не ответила ${empty}, отложено на следующий прогон ${plan.deferred}.`,
+    );
+  }
 
   if (dryRun) {
     console.log();
@@ -1197,6 +1585,11 @@ async function main(): Promise<void> {
   // результаты прошлых синхронизаций. Очистку делаем ТОЛЬКО если источник
   // в этот раз что-то отдал — иначе сетевой сбой опустошил бы ленту.
   for (const source of SYNC_SOURCES) {
+    if (liveMode) {
+      // Живой поиск только добавляет: пересоздание снимка источника стёрло бы
+      // всё, что собрали плановые профили.
+      continue;
+    }
     if ((perSource.get(source) ?? 0) === 0) {
       // Пропущенный треком источник не «ничего не вернул», а не опрашивался: его
       // строки остаются как есть до следующего опроса.
@@ -1207,14 +1600,34 @@ async function main(): Promise<void> {
       );
       continue;
     }
+    // Строки, найденные живым поиском, переживают очистку: плановые профили их
+    // не собирали, и без защиты человек потерял бы найденное через два часа.
     const { error: cleanError, count: deleted } = await supabase
       .from("tenders")
       .delete({ count: "exact" })
-      .eq("data_source", source);
+      .eq("data_source", source)
+      .or(KEEP_LIVE_ROWS_FILTER);
     if (cleanError) {
       console.error(`Не удалось очистить старые записи ${source}: ${cleanError.message}`);
     } else {
       console.log(`Удалено старых записей ${source}: ${deleted ?? 0}`);
+    }
+  }
+
+  if (liveMode) {
+    console.log("Очистка пропущена: живой поиск только добавляет закупки.");
+  } else {
+    // Закрытые «живые» закупки удаляются через сутки после срока подачи: иначе
+    // найденное накапливалось бы вечно, ведь плановая очистка их щадит.
+    const { error: expireError, count: expired } = await supabase
+      .from("tenders")
+      .delete({ count: "exact" })
+      .eq("raw_data->>origin", LIVE_ORIGIN)
+      .lt("submission_end", liveExpiryCutoff(Date.now()));
+    if (expireError) {
+      console.error(`Не удалось убрать закрытые живые закупки: ${expireError.message}`);
+    } else if ((expired ?? 0) > 0) {
+      console.log(`Убрано закрытых закупок живого поиска: ${expired ?? 0}`);
     }
   }
 
@@ -1224,8 +1637,24 @@ async function main(): Promise<void> {
   let duplicates = 0;
   /** Номера закупок, которые не записаны из-за ненапечатанного срока подачи. */
   const withoutDeadline: string[] = [];
+  /** Живой поиск: закупки, закрытые больше суток назад, в базу не идут. */
+  let liveClosedSkipped = 0;
 
-  for (const t of unique.values()) {
+  const saveOne = async (t: Tender): Promise<void> => {
+    // ЕИС отдаёт и давно закрытые закупки: в первом живом прогоне 14 из 35 были
+    // закрыты больше суток назад. Плановый прогон такие «живые» строки всё равно
+    // удалит, поэтому сохранять их — значит показывать закрытое как найденное.
+    if (liveMode && isLiveExpired(t.deadlines.submissionEnd, Date.now())) {
+      liveClosedSkipped += 1;
+      return;
+    }
+    // Плановый сбор не хранит давно закрытое (давние извещения ЕИС с вечным
+    // статусом «Подача заявок»): неделя после срока — предел.
+    if (!liveMode && isClosedLongAgo(t.deadlines.submissionEnd, Date.now())) {
+      liveClosedSkipped += 1;
+      return;
+    }
+
     // `submission_end` объявлен NOT NULL, а пустую строку в этом поле способен
     // отдать не один источник: Фабрикант и Росэлторг берут ближайший срок из
     // лотов, ТЭК-Торг — `dateEndRegistration`, Контур — `ApplicationDeadline`.
@@ -1237,7 +1666,7 @@ async function main(): Promise<void> {
     // неизвестен. Потеря со счётчиком и номерами честнее.
     if (t.deadlines.submissionEnd.trim() === "") {
       withoutDeadline.push(t.regNumber);
-      continue;
+      return;
     }
 
     const row = {
@@ -1276,6 +1705,15 @@ async function main(): Promise<void> {
       ...(t.dataSource === "KONTUR"
         ? { raw_data: konturAdapter?.getRaw(t.regNumber) ?? null, synced_at: syncStartedAt }
         : {}),
+      // Найденное живым поиском помечается: плановая очистка такие строки щадит.
+      // Колонка raw_data появилась миграцией Контура и есть в базе.
+      ...(liveMode && liveQuery !== null && t.dataSource !== "KONTUR"
+        ? { raw_data: liveRawData(liveQuery, syncStartedAt) }
+        : {}),
+      // Отобрано моделью при обходе региона (плановый сбор): лента покажет по словам профиля.
+      ...(!liveMode && t.dataSource !== "KONTUR" && senseFit.get(t.regNumber) === "yes"
+        ? { raw_data: { origin: "sense", keywords: senseKeywords.get(t.regNumber) ?? [] } }
+        : {}),
     };
 
     // Запись через репозиторий, а не прямым upsert: там же живёт правило
@@ -1285,31 +1723,44 @@ async function main(): Promise<void> {
       const { duplicateOf } = await tenderRepository.upsertByRegNumber(row);
       if (duplicateOf) {
         duplicates++;
-        continue;
+        return;
       }
       saved++;
     } catch (err) {
       console.error(`  ✗ ${t.regNumber}: ${describeError(err)}`);
       errors++;
-      continue;
+      return;
     }
 
     // Документы закупки (сейчас их отдаёт только Контур) складываем в
     // tender_documents — дальше их подхватывает пайплайн анализа документации.
     // Ключ записи сервис берёт сам из t.regNumber: UUID строки tenders не
     // подходит, плановая синхронизация пересоздаёт строки каждый прогон.
-    if (t.documents.length === 0) continue;
+    if (t.documents.length === 0) return;
     try {
       documents += await saveKonturTenderDocuments(t);
     } catch (err) {
       // Закупка уже сохранена: ошибка документов не должна рушить прогон.
       console.error(`  ✗ документы ${t.regNumber}: ${describeError(err)}`);
     }
-  }
+  };
+
+  /*
+    Запись пачкой одновременных запросов: строки независимы (ключ — реестровый
+    номер, повторы убраны выше), а по одной 141 строка писалась 22 секунды.
+  */
+  await runPool([...unique.values()], SAVE_CONCURRENCY, saveOne);
 
   const elapsed = ((Date.now() - started) / 1000).toFixed(1);
   console.log();
   if (konturAdapter) logKonturUsage(konturAdapter);
+  if (liveClosedSkipped > 0) {
+    console.log(
+      liveMode
+        ? `Не сохранено закупок, закрытых больше суток назад: ${liveClosedSkipped}.`
+        : `Не сохранено закупок, закрытых больше недели назад: ${liveClosedSkipped}.`,
+    );
+  }
   if (withoutDeadline.length > 0) {
     // Номера печатаются, чтобы потерю можно было проверить по карточке площадки.
     // Дальше двадцати — только первые: строка на сотню номеров не читается, а
@@ -1328,6 +1779,13 @@ async function main(): Promise<void> {
   // Закупки, которые партнёр перевёл в «Интересное», ждут глубокого анализа.
   // Документацию для них догружаем этим же прогоном: машина сейчас в российском
   // сегменте сети и ЕИС отвечает, а отдельная задача в планировщике не нужна.
+  if (liveMode) {
+    // Очередь документов — работа планового прогона: тяжёлая, с обращением к
+    // ЕИС за файлами, и человеку, ждущему результат поиска, она только
+    // удлиняла бы ожидание.
+    console.log("Глубокий анализ: пропущен в живом поиске.");
+    return;
+  }
   console.log();
   console.log("Глубокий анализ: догрузка документации по очереди...");
   try {

@@ -1,5 +1,6 @@
 "use client";
 
+import { KONTUR_ENABLED } from "@/domain/features";
 import { useEffect, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import type { ProcessingJob } from "@/domain/entities";
@@ -43,11 +44,12 @@ export default function AdminJobsPage() {
         <div>
           <h1 className="text-[26px] font-semibold leading-tight tracking-tight text-foreground">Журнал фоновых процессов</h1>
           <p className="muted mt-1">
-            Расход платного API Контур.Закупок и запуск синхронизации вручную — вверху.
-            Ниже состояние сервера в России: он скачивает документацию к закупкам и
-            выполняет плановый прогон, поэтому очередь заданий и её журнал показаны там же.
-            В самом нижнем журнале — действия, выполненные в браузере (сейчас это
-            добавление своей закупки); прогон и очередь в него не пишут.
+            {KONTUR_ENABLED
+              ? "Расход платного API Контур.Закупок и запуск синхронизации вручную — вверху. Ниже состояние сервера в России: "
+              : "Состояние сервера в России: "}
+            он скачивает документацию к закупкам и выполняет плановый прогон, поэтому очередь
+            заданий и её журнал показаны там же. В самом нижнем журнале — действия, выполненные
+            в браузере (сейчас это добавление своей закупки); прогон и очередь в него не пишут.
           </p>
         </div>
         <Button variant="secondary" onClick={refresh}>
@@ -55,7 +57,7 @@ export default function AdminJobsPage() {
         </Button>
       </div>
 
-      <KonturSyncPanel />
+      {KONTUR_ENABLED && <KonturSyncPanel />}
 
       <WorkerQueuePanel />
 

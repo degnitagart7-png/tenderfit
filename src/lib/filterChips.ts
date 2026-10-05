@@ -3,6 +3,7 @@ import { defaultFilters } from "@/domain/filtering";
 import { scopeShortLabels } from "@/domain/searchRanking";
 import {
   closingSoonChipLabel,
+  hideClosedChipLabel,
   dataSourceLabels,
   pipelineLabels,
   searchControlLabels,
@@ -160,6 +161,13 @@ export function activeFilterChips(filters: TenderFilters): FilterChip[] {
       id: "closingSoonOnly",
       label: closingSoonChipLabel,
       reset: { closingSoonOnly: false, page: 1 },
+    });
+  }
+  if (filters.hideClosed) {
+    chips.push({
+      id: "hideClosed",
+      label: hideClosedChipLabel,
+      reset: { hideClosed: false, page: 1 },
     });
   }
   if (filters.hasHardBlockers !== null) {

@@ -26,6 +26,16 @@ import { TenderSearchPanel } from "@/components/dashboard/TenderSearchPanel";
   `search`, 24 из 30 — прогон 24.09.2026), потому что остаток берётся именно
   из неё.
 */
+/*
+  Контур отключён выключателем KONTUR_ENABLED (src/domain/features.ts). Этот файл
+  проверяет его спящий интерфейс, поэтому на время тестов выключатель включён;
+  поведение при выключенном Контуре проверяют отдельные тесты.
+*/
+vi.mock("@/domain/features", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/domain/features")>()),
+  KONTUR_ENABLED: true,
+}));
+
 vi.mock("@/services/konturApiService", () => ({
   konturApiService: { getUsage: vi.fn(), sync: vi.fn() },
 }));

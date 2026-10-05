@@ -8,6 +8,7 @@ import {
   parsePlacingWay,
   parsePrice,
   parseRuDate,
+  recordsPerPageFor,
 } from "@/adapters/tender-source/eisParser";
 
 describe("parsePrice", () => {
@@ -65,6 +66,75 @@ describe("buildEisSearchUrl", () => {
     expect(url).toContain("priceMin=100000");
     expect(url).toContain("priceMax=5000000");
     expect(url).toContain("searchString=");
+  });
+});
+
+/*
+  Проверено 05.10.2026 на живом сайте (ЕИС, запрос «юридических услуг»): без
+  morphology и af первые 50 строк выдачи заняли закрытые закупки и совпадения
+  по «юридических лиц» из текста извещений (вывоз отходов, питание форума), а
+  настоящие юридические закупки находятся только с морфологией и фильтром
+  «Подача заявок».
+*/
+describe("buildEisSearchUrl: морфология и открытые закупки", () => {
+  it("всегда включает морфологию: словоформы («юридических» — «юридические») ищутся как одно слово", () => {
+    const url = new URL(buildEisSearchUrl({ searchString: "юридические услуги", offset: 0 }));
+
+    expect(url.searchParams.get("morphology")).toBe("on");
+  });
+
+  it("onlyOpen добавляет фильтр «Подача заявок» и сортирует по дате размещения", () => {
+    const url = new URL(buildEisSearchUrl({ searchString: "юристы", onlyOpen: true, offset: 0 }));
+
+    expect(url.searchParams.get("af")).toBe("on");
+    expect(url.searchParams.get("orderBy")).toBe("PUBLISH_DATE");
+  });
+
+  it("без onlyOpen фильтра по этапу нет, порядок прежний", () => {
+    const url = new URL(buildEisSearchUrl({ searchString: "юристы", offset: 0 }));
+
+    expect(url.searchParams.has("af")).toBe(false);
+    expect(url.searchParams.get("orderBy")).toBe("UPDATE_DATE");
+  });
+
+  it("явный orderBy сильнее умолчания onlyOpen", () => {
+    const url = new URL(buildEisSearchUrl({ searchString: "x", onlyOpen: true, orderBy: "PRICE", offset: 0 }));
+
+    expect(url.searchParams.get("orderBy")).toBe("PRICE");
+  });
+});
+
+/*
+  Проверено 05.10.2026: customerPlace + customerPlaceCodes с кодом региона по
+  КЛАДР сужают выдачу по региону заказчика (365 закупок по «строительству» для
+  Бурятии, 42 из 44 показанных — бурятские). Один customerPlaceCodes без
+  customerPlace ничего не сужает.
+*/
+describe("buildEisSearchUrl: дата размещения", () => {
+  it("граница даты уходит параметром publishDateFrom", () => {
+    const url = new URL(buildEisSearchUrl({ searchString: "x", publishedFrom: "05.09.2026", offset: 0 }));
+
+    expect(url.searchParams.get("publishDateFrom")).toBe("05.09.2026");
+  });
+
+  it("без границы параметра нет", () => {
+    expect(new URL(buildEisSearchUrl({ searchString: "x", offset: 0 })).searchParams.has("publishDateFrom")).toBe(false);
+  });
+});
+
+describe("buildEisSearchUrl: регион заказчика", () => {
+  it("код региона уходит в оба параметра в формате КЛАДР", () => {
+    const url = new URL(buildEisSearchUrl({ searchString: "строительство", customerRegionCode: "03", offset: 0 }));
+
+    expect(url.searchParams.get("customerPlace")).toBe("03000000000");
+    expect(url.searchParams.get("customerPlaceCodes")).toBe("03000000000");
+  });
+
+  it("без региона параметров места нет", () => {
+    const url = new URL(buildEisSearchUrl({ searchString: "x", offset: 0 }));
+
+    expect(url.searchParams.has("customerPlace")).toBe(false);
+    expect(url.searchParams.has("customerPlaceCodes")).toBe(false);
   });
 });
 
@@ -232,5 +302,47 @@ describe("buildEisSearchUrl без регионального фильтра", (
     for (const param of ["oktmo", "region", "district", "customerPlace"]) {
       expect(url.toLowerCase()).not.toContain(param);
     }
+  });
+});
+
+/**
+ * Размер страницы выдачи ЕИС.
+ *
+ * Адаптер листал выдачу параметром `offset`, и ЕИС его игнорирует: проверено
+ * 04.10.2026 на живом сайте — `offset=0`, `10`, `20`, `30` вернули одни и те же
+ * десять закупок. Лимит при этом только обрезал первую страницу, поэтому живой
+ * поиск с лимитом 25 получал 10. Настоящие параметры — `pageNumber` и
+ * `recordsPerPage` (`_10`, `_20`, `_50`, `_100`): размер страницы один запрос
+ * берёт целиком, без цикла по страницам.
+ */
+describe("recordsPerPageFor", () => {
+  it.each([
+    [1, 10],
+    [10, 10],
+    [11, 20],
+    [20, 20],
+    [25, 50],
+    [50, 50],
+    [51, 100],
+    [500, 100],
+  ])("лимит %i — страница на %i", (limit, expected) => {
+    expect(recordsPerPageFor(limit)).toBe(expected);
+  });
+
+  it("лимита нет — обычная страница: безлимитный обход ЕИС не нужен", () => {
+    expect(recordsPerPageFor(undefined)).toBe(10);
+    expect(recordsPerPageFor(Number.POSITIVE_INFINITY)).toBe(10);
+  });
+});
+
+describe("buildEisSearchUrl — размер страницы", () => {
+  it("обычная страница параметр не передаёт: так было и работало", () => {
+    expect(buildEisSearchUrl({ searchString: "x" })).not.toContain("recordsPerPage");
+  });
+
+  it("страница больше обычной просит свой размер с подчёркиванием, как у ЕИС", () => {
+    expect(buildEisSearchUrl({ searchString: "x", recordsPerPage: 50 })).toContain(
+      "recordsPerPage=_50",
+    );
   });
 });

@@ -3,6 +3,7 @@ import {
   innSchema,
   isValidInn,
   tenderAnalysisSchema,
+  tenderDeadlineSchema,
 } from "@/domain/schemas";
 import { demoTenders } from "@/mocks/tenders";
 import { demoCompanyProfile } from "@/mocks/companyProfile";
@@ -92,5 +93,39 @@ describe("tenderAnalysisSchema", () => {
     expect(
       tenderAnalysisSchema.safeParse({ ...analysis, summary: "" }).success,
     ).toBe(false);
+  });
+});
+
+/**
+ * Даты публикации и обновления могут быть неизвестны.
+ *
+ * Росэлторг не печатает дату публикации ни в строке выдачи, ни в наборе лотов,
+ * а Фабрикант — дату обновления: в живой выдаче 04.10.2026 пусты обе даты у
+ * 123 закупок и дата обновления у 94. Схема требовала непустые строки, и
+ * `analyzeTender` падал на первой такой закупке — вся лента вместо списка
+ * показывала «String must contain at least 1 character(s)».
+ *
+ * Срок подачи заявок — другое дело: без него закупку нельзя оценить, и он
+ * по-прежнему обязателен.
+ */
+describe("tenderDeadlineSchema: неизвестные даты", () => {
+  const base = {
+    submissionEnd: "2026-10-30T08:00:00.000Z",
+    publicationDate: "2026-10-01T08:00:00.000Z",
+    lastUpdateDate: "2026-10-02T08:00:00.000Z",
+    deliveryTermDays: null,
+    warrantyMonths: null,
+  };
+
+  it("пустая дата публикации допустима", () => {
+    expect(tenderDeadlineSchema.safeParse({ ...base, publicationDate: "" }).success).toBe(true);
+  });
+
+  it("пустая дата обновления допустима", () => {
+    expect(tenderDeadlineSchema.safeParse({ ...base, lastUpdateDate: "" }).success).toBe(true);
+  });
+
+  it("пустой срок подачи по-прежнему недопустим", () => {
+    expect(tenderDeadlineSchema.safeParse({ ...base, submissionEnd: "" }).success).toBe(false);
   });
 });

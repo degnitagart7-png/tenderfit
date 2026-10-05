@@ -1,3 +1,4 @@
+import { cleanTenderSubject } from "@/domain/subjectCleanup";
 import type { Tender } from "@/domain/entities";
 
 /**
@@ -65,6 +66,13 @@ export interface ParsedQuery {
 
 /** Текст закупки, разложенный по областям поиска. */
 export interface SearchCorpus {
+  /**
+   * Только предмет закупки, без заказчика и реестровых полей. По нему смысловое
+   * слово запроса засчитывается как «это то, что закупают»: «юридический» в
+   * названии заказчика («Юридический университет») предметом не является. Не
+   * задан — предметом считается вся область `subject`.
+   */
+  head?: string;
   /** Предмет закупки + название заказчика + адрес поставки. */
   subject: string;
   /** Номенклатура: лоты и требования (то, что в Контуре называется «Объекты»). */
@@ -362,6 +370,7 @@ export function buildCorpus(tender: Tender): SearchCorpus {
 
   const parts = collectParts(tender);
   const corpus: SearchCorpus = {
+    head: parts.subjectHead,
     // Реестровые поля склеиваются с предметом закупки намеренно: номер
     // извещения копируют в строку поиска чаще, чем формулируют предмет словами,
     // и потерять такую выдачу — значит сломать привычный сценарий. Контур номер
@@ -427,7 +436,7 @@ interface CorpusParts {
 function collectParts(tender: Tender): CorpusParts {
   const itemParts: string[] = [];
   for (const lot of tender.lots ?? []) {
-    itemParts.push(...nonEmpty(lot?.subject));
+    itemParts.push(...nonEmpty(lot?.subject === undefined ? undefined : cleanTenderSubject(lot.subject)));
   }
   for (const requirement of tender.requirements ?? []) {
     itemParts.push(...nonEmpty(requirement?.title, requirement?.description));
@@ -529,25 +538,37 @@ function prefixMatch(wordStem: string, queryStem: string): boolean {
  * бы «юридическая лицензия».
  */
 const LEGAL_ENTITY_IDIOM =
-  /физическ[а-я]*\s*(?:,|и|или)?\s*юридическ[а-я]*\s+лиц(?:о|а|у|ом|е|ам|ами|ах)?(?![а-я])|юридическ[а-я]*\s*(?:,|и|или)?\s*(?:физическ[а-я]*\s+)?лиц(?:о|а|у|ом|е|ам|ами|ах)?(?![а-я])|юридическ[а-я]*\s+адрес[а-я]*/g;
+  /физическ[а-я]*\s*(?:,|и|или)?\s*юридическ[а-я]*\s+лиц(?:о|а|у|ом|е|ам|ами|ах)?(?![а-я])|юридическ[а-я]*\s*(?:,|и|или)?\s*(?:физическ[а-я]*\s+)?лиц(?:о|а|у|ом|е|ам|ами|ах)?(?![а-я])|юридическ[а-я]*\s+адрес[а-я]*|юридически(?![а-я])|справочн[а-я]*[-\s]+правов[а-я]*(?:\s+систем[а-я]*)?|право\s+заключ[а-я]*(?:\s+(?:договор|контракт)[а-я]*)?/g;
 
 /**
- * «Лицо» или «адрес» в запросе: человек сам ищет юридических лиц или
- * юридический адрес, идиому не трогаем.
+ * «Лицо», «адрес» или «справочная система» в запросе: человек сам ищет
+ * юридических лиц, юридический адрес или справочно-правовую систему, идиому
+ * не трогаем.
  */
-const LEGAL_ENTITY_WORD = /^(?:лиц(?:о|а|у|ом|е|ам|ами|ах)?|адрес[а-я]*)$/;
+const LEGAL_ENTITY_WORD = /^(?:лиц(?:о|а|у|ом|е|ам|ами|ах)?|адрес[а-я]*|справочн[а-я]*)$/;
 
-/** Слово запроса — «юридический» или его начало, набранное не до конца. */
+/**
+ * Слово запроса из области права: «юридический», «правовой», «юрист»,
+ * «адвокат» (или их начало, набранное не до конца).
+ */
 function isLegalWord(word: string): boolean {
   const norm = normalize(word);
-  return norm.length >= 4 && ("юридическ".startsWith(norm) || norm.startsWith("юридическ"));
+  if (norm.length < 4) return false;
+  return ["юридическ", "правов", "юрист", "адвокат"].some(
+    (root) => root.startsWith(norm) || norm.startsWith(root),
+  );
 }
 
 /**
- * Нужно ли читать «юридическ…» в смысле права, а не лица.
+ * Нужно ли читать запрос в смысле права и вычёркивать из закупок то, что
+ * только похоже на право: «юридическое лицо», «юридический адрес», наречие
+ * «юридически обязывающий», «справочно-правовая система».
  *
- * Да, когда в запросе есть «юридическ…» и нет «лица»: человек, набравший
- * «юридическому лицу», ищет именно их, и вычёркивать идиому у него нельзя.
+ * Да, когда в запросе есть слово из области права и нет «лица», «адреса» или
+ * «справочной»: человек, набравший «юридическому лицу» или «справочно-правовая
+ * система», ищет именно их, и вычёркивать идиому у него нельзя. Справочно-
+ * правовая система (КонсультантПлюс, Гарант) — программа, а не правовая услуга:
+ * «правовое сопровождение» её находило (разбор ошибки 05.10.2026).
  */
 function readsLegalSense(words: readonly string[]): boolean {
   return (
@@ -588,6 +609,8 @@ export interface ScopeIndex {
  */
 export interface SearchIndex {
   corpus: SearchCorpus;
+  /** Предмет закупки отдельно от заказчика; null, если корпус его не разделяет. */
+  head: ScopeIndex | null;
   scopes: Record<SearchScope, ScopeIndex>;
 }
 
@@ -616,6 +639,7 @@ function indexScope(text: string): ScopeIndex {
 export function indexCorpus(corpus: SearchCorpus): SearchIndex {
   return {
     corpus,
+    head: corpus.head === undefined ? null : indexScope(corpus.head),
     scopes: {
       subject: indexScope(corpus.subject),
       items: indexScope(corpus.items),
@@ -667,6 +691,24 @@ function termHitsScope(index: ScopeStems, stem: string): boolean {
   if (index.stems.has(stem)) return true;
   if (stem.length < MIN_PREFIX_LENGTH) return false;
   return index.stemList.some((wordStem) => prefixMatch(wordStem, stem));
+}
+
+/**
+ * Слова, которые есть почти в каждом названии и ничего не говорят о предмете:
+ * «оказание услуг», «выполнение работ», «поставка товара». Они не определяют
+ * закупку, поэтому смысловым («ядром» запроса) считается остальное.
+ */
+const GENERIC_WORDS = [
+  "услуга", "услуги", "услуг", "работа", "работы", "работ", "поставка", "поставки",
+  "поставок", "оказание", "оказании", "выполнение", "выполнении",
+  "закупка", "закупки", "закупок", "товар", "товары", "товаров", "приобретение", "договор", "контракт",
+  "заключение", "проведение", "осуществление", "обеспечение", "организация",
+  "комплекс", "нужды",
+];
+const GENERIC_STEMS: ReadonlySet<string> = new Set(GENERIC_WORDS.map((word) => stemRu(word)));
+
+export function isGenericTerm(term: string): boolean {
+  return GENERIC_STEMS.has(stemRu(term));
 }
 
 /**
@@ -789,11 +831,58 @@ export function matchIndex(
     }
   }
 
-  const boxOk =
-    termPairs.length > 0 && termPairs.every((pair) => matchedTermSet.has(pair.term));
-  const groupsOk = groupPairs.some((group) =>
-    group.every((pair) => matchedTermSet.has(pair.term)),
-  );
+  /*
+    Где слово запроса считается «предметом закупки».
+
+    Строго — в предмете (без заказчика) и в лотах. Мягко — ещё и в названии
+    заказчика, номере, адресе: так работает поиск по заказчику и по номеру
+    извещения («Мосэнерго», «0173…»). Мягкость выключается, когда в запросе есть
+    общее слово («услуги», «работы»): такой запрос описывает ВИД закупки, и
+    «Юридический университет» в названии заказчика не делает строительный
+    контроль юридической услугой (разбор ошибки 05.10.2026).
+
+    Документы в обоих случаях не считаются: перечень слов в теле договора
+    предмета закупки не определяет.
+  */
+  const strictHits = new Set<string>();
+  const looseHits = new Set<string>();
+  for (const pair of [...termPairs, ...groupPairs.flat()]) {
+    const inHead = [index.head ?? index.scopes.subject, index.scopes.items].some((data) =>
+      hits(view(data), pair),
+    );
+    if (inHead) {
+      strictHits.add(pair.term);
+      looseHits.add(pair.term);
+    } else if (hits(view(index.scopes.subject), pair)) {
+      looseHits.add(pair.term);
+    }
+  }
+
+  /*
+    Закупка найдена, только если хотя бы одно смысловое слово запроса стоит в
+    предмете закупки (см. выше). Остальные слова могут быть и в документах.
+    Иначе «услуги» из названия и «юридических» из примечания к ТКП
+    складывались в совпадение. Правило действует, когда поиск идёт и по
+    документам, и по названию с лотами; если человек сам ограничил область, он
+    выбрал её сознательно.
+  */
+  const titleGate =
+    searchScopes.includes("documents") &&
+    (searchScopes.includes("subject") || searchScopes.includes("items"));
+  /** Смысловые слова набора; в наборе из одних общих слов смысловыми считаются все. */
+  const coreOf = (pairs: ReadonlyArray<(typeof termPairs)[number]>): ReadonlyArray<string> => {
+    const specific = pairs.filter((pair) => !isGenericTerm(pair.term));
+    return (specific.length > 0 ? specific : pairs).map((pair) => pair.term);
+  };
+  const setOk = (pairs: ReadonlyArray<(typeof termPairs)[number]>): boolean => {
+    if (!pairs.every((pair) => matchedTermSet.has(pair.term))) return false;
+    if (!titleGate) return true;
+    const titleHits = pairs.some((pair) => isGenericTerm(pair.term)) ? strictHits : looseHits;
+    return coreOf(pairs).some((term) => titleHits.has(term));
+  };
+
+  const boxOk = termPairs.length > 0 && setOk(termPairs);
+  const groupsOk = groupPairs.some((group) => setOk(group));
   const textApplicable = termPairs.length > 0 || groupPairs.length > 0;
   const textOk = boxOk || groupsOk;
   const codesApplicable = query.codes.length > 0;

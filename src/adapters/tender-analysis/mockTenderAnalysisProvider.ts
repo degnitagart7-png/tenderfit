@@ -31,6 +31,7 @@ import {
 import { tenderAnalysisSchema } from "@/domain/schemas";
 import { profileDescribesSubject } from "@/domain/emptyCompanyProfile";
 import type { TenderAnalysisProvider } from "@/adapters/types";
+import { isRegionKnown } from "@/domain/entities";
 
 /**
  * Mock-реализация AI-анализа: детерминированно рассчитывает вердикт,
@@ -261,7 +262,8 @@ function buildOperationalFitDetails(
   const r = profile.restrictions;
   const deliveryDays = tender.deadlines.deliveryTermDays;
   const deliveryOk = deliveryDays === null || deliveryDays >= r.minDeliveryTermDays;
-  const regionOk = r.workRegions.length === 0 || r.workRegions.includes(tender.region);
+  const regionKnown = isRegionKnown(tender.region);
+  const regionOk = r.workRegions.length === 0 || !regionKnown || r.workRegions.includes(tender.region);
   const personnelOk = profile.hasPersonnel;
   const equipmentOk = profile.hasEquipment;
   const logisticsOk = r.maxDistanceKm === null || true; // Упрощённо: логистика доступна.
@@ -279,7 +281,9 @@ function buildOperationalFitDetails(
     },
     geography: {
       ok: regionOk,
-      detail: regionOk
+      detail: !regionKnown
+        ? "Регион поставки в извещении не указан — проверьте вручную"
+        : regionOk
         ? `Регион поставки ${tender.region} — в списке рабочих регионов профиля`
         : `Регион поставки ${tender.region} — вне рабочих регионов профиля (${r.workRegions.join(", ") || "не указаны"})`,
       evidenceId: null,

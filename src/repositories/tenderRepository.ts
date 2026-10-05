@@ -235,8 +235,12 @@ export const tenderRepository = {
       query = query.lte("price", filters.price_max);
     }
 
+    // Второй ключ обязателен: срок подачи у многих закупок одинаков, и при
+    // постраничной выборке строки с равным сроком могли бы повторяться на
+    // стыке страниц или пропадать. `id` уникален и порядок делает полным.
     const { data, error } = await query
       .order("submission_end", { ascending: false })
+      .order("id", { ascending: true })
       .range(offset, offset + limit - 1);
 
     if (error) throw error;

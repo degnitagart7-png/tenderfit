@@ -16,6 +16,7 @@ import { readJSON, writeJSON, STORAGE_KEYS } from "@/lib/storage";
 import { Button, Checkbox, Field, Input, Select } from "@/components/ui/primitives";
 import {
   closingSoonLabel,
+  hideClosedLabel,
   dataSourceLabels,
   pipelineLabels,
   pipelineOrder,
@@ -312,6 +313,12 @@ export function TenderFiltersPanel({
             label={closingSoonLabel}
             checked={filters.closingSoonOnly}
             onChange={(e) => onChange({ closingSoonOnly: e.target.checked, page: 1 })}
+          />
+
+          <Checkbox
+            label={hideClosedLabel}
+            checked={filters.hideClosed}
+            onChange={(e) => onChange({ hideClosed: e.target.checked, page: 1 })}
           />
 
           <button

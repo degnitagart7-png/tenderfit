@@ -118,6 +118,7 @@ export function filtersToSearchParams(filters: TenderFilters): URLSearchParams {
   if (!filters.includeForeignCurrency) params.set("fx", HIDE);
   if (filters.verdict !== "ALL") params.set("verdict", filters.verdict);
   if (filters.closingSoonOnly) params.set("soon", "1");
+  if (filters.hideClosed) params.set("closed", "hide");
   if (filters.hasHardBlockers !== null) {
     params.set("blk", filters.hasHardBlockers ? "yes" : "no");
   }
@@ -167,6 +168,7 @@ export function filtersFromSearchParams(params: URLSearchParams): TenderFilters 
     includeForeignCurrency: params.get("fx") !== HIDE,
     verdict: verdicts[0] ?? "ALL",
     closingSoonOnly: params.get("soon") === "1",
+    hideClosed: params.get("closed") === "hide",
     hasHardBlockers: pickTri(params.get("blk")),
     hasAdvance: pickTri(params.get("adv")),
     hasSecurity: pickTri(params.get("sec")),
@@ -202,10 +204,29 @@ export function countActiveFilters(filters: TenderFilters): number {
   if (!filters.includeForeignCurrency) count += 1;
   if (filters.verdict !== "ALL") count += 1;
   if (filters.closingSoonOnly) count += 1;
+  if (filters.hideClosed) count += 1;
   if (filters.hasHardBlockers !== null) count += 1;
   if (filters.hasAdvance !== null) count += 1;
   if (filters.hasSecurity !== null) count += 1;
   if (filters.pipelineStatus !== "ALL") count += 1;
   if (filters.batchStamp !== null) count += 1;
   return count;
+}
+
+/** Параметры адреса, которые задают только вид выдачи, а не отбор. */
+const VIEW_ONLY_PARAMS = new Set(["sort", "dir", "page", "size"]);
+
+/**
+ * В адресе нет условий отбора — только порядок, страница или размер страницы.
+ *
+ * Такой адрес лента получает, когда человек переключил порядок: профиль поиска
+ * при этом обязан применяться. Раньше любой параметр отключал профиль, и
+ * «Порядок: свежие сверху» показывал всю базу вместо закупок профиля
+ * (замечание 05.10.2026).
+ */
+export function hasOnlyViewParams(params: URLSearchParams): boolean {
+  for (const key of params.keys()) {
+    if (!VIEW_ONLY_PARAMS.has(key)) return false;
+  }
+  return true;
 }

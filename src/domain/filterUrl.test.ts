@@ -4,6 +4,7 @@ import {
   countActiveFilters,
   filtersFromSearchParams,
   filtersToSearchParams,
+  hasOnlyViewParams,
 } from "@/domain/filterUrl";
 
 function roundTrip(filters: TenderFilters): TenderFilters {
@@ -178,5 +179,38 @@ describe("параметр партии прогона", () => {
 
   it("метка партии считается действующим ограничением", () => {
     expect(countActiveFilters({ ...defaultFilters, batchStamp: STAMP })).toBe(1);
+  });
+});
+
+describe("переключатель «Скрыть закрытые» в адресе", () => {
+  it("по умолчанию параметра нет", () => {
+    expect(filtersToSearchParams(defaultFilters).has("closed")).toBe(false);
+  });
+
+  it("включённый переключатель переживает путь туда и обратно", () => {
+    const params = filtersToSearchParams({ ...defaultFilters, hideClosed: true });
+
+    expect(params.get("closed")).toBe("hide");
+    expect(filtersFromSearchParams(params).hideClosed).toBe(true);
+  });
+
+  it("считается активным фильтром", () => {
+    expect(countActiveFilters({ ...defaultFilters, hideClosed: true })).toBe(
+      countActiveFilters(defaultFilters) + 1,
+    );
+  });
+});
+
+
+describe("hasOnlyViewParams", () => {
+  it("порядок, направление, страница и размер — не отбор", () => {
+    expect(hasOnlyViewParams(new URLSearchParams("sort=freshness&dir=asc&page=2&size=50"))).toBe(true);
+    expect(hasOnlyViewParams(new URLSearchParams(""))).toBe(true);
+  });
+
+  it("слова, регион, закон — отбор", () => {
+    expect(hasOnlyViewParams(new URLSearchParams("sort=freshness&q=ремонт"))).toBe(false);
+    expect(hasOnlyViewParams(new URLSearchParams("reg=Москва"))).toBe(false);
+    expect(hasOnlyViewParams(new URLSearchParams("law=FZ_44"))).toBe(false);
   });
 });

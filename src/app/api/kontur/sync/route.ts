@@ -1,3 +1,4 @@
+import { KONTUR_DISABLED_MESSAGE, KONTUR_ENABLED } from "@/domain/features";
 import { NextRequest, NextResponse } from "next/server";
 import {
   createKonturAdapter,
@@ -185,6 +186,9 @@ function innList(value: unknown): string[] {
  * errors: сохранённые закупки важнее, чем точный код ошибки.
  */
 export async function POST(request: NextRequest): Promise<NextResponse> {
+  if (!KONTUR_ENABLED) {
+    return NextResponse.json({ error: KONTUR_DISABLED_MESSAGE }, { status: 410 });
+  }
   let body: SyncBody;
   try {
     body = (await request.json()) as SyncBody;

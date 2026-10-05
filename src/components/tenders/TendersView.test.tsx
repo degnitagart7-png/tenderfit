@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import type { TenderRow } from "@/domain/filtering";
 import { demoTenders } from "@/mocks/tenders";
 import { demoCompanyProfile } from "@/mocks/companyProfile";
 import { analyzeTender } from "@/adapters/tender-analysis/mockTenderAnalysisProvider";
-import { searchControlLabels } from "@/lib/labels";
+import { hideClosedLabel, searchControlLabels } from "@/lib/labels";
 import { useTenderData } from "@/hooks/useTenderData";
 import { useRouter } from "next/navigation";
 import { STORAGE_KEYS } from "@/lib/storage";
@@ -95,6 +95,95 @@ describe("TendersView — фильтры в адресной строке", () =
     expect(replace).toHaveBeenCalledWith(address({ q: "вентиль" }), { scroll: false });
   });
 
+  it("переключатель «Скрыть закрытые» попадает в адрес и в чипы", () => {
+    render(<TendersView />);
+
+    // Блок фильтров раскрыт по умолчанию только при уже заданных ограничениях.
+    fireEvent.click(screen.getByRole("button", { name: /Фильтры/ }));
+    fireEvent.click(screen.getByLabelText(hideClosedLabel));
+
+    expect(replace).toHaveBeenCalledWith(address({ closed: "hide" }), { scroll: false });
+    expect(screen.getByText("Без закрытых")).toBeTruthy();
+  });
+
+  it("ссылка с closed=hide открывается уже с включённым переключателем", () => {
+    openAt("?closed=hide");
+    render(<TendersView />);
+
+    // Блок раскрыт состоянием, прочитанным при монтировании, то есть до разбора
+    // адреса, поэтому открываем его рукой: проверяется само значение флажка.
+    const toggle = screen.getByRole("button", { name: /Фильтры/ });
+    if (toggle.getAttribute("aria-expanded") !== "true") fireEvent.click(toggle);
+
+    expect((screen.getByLabelText(hideClosedLabel) as HTMLInputElement).checked).toBe(true);
+  });
+
+  it("панель помощника поиска видна только при запросе", () => {
+    openAt("");
+    const { unmount } = render(<TendersView />);
+    expect(screen.queryByTestId("search-assist")).toBeNull();
+    unmount();
+
+    openAt("?q=ноутбук");
+    render(<TendersView />);
+    expect(screen.getByTestId("search-assist")).toBeTruthy();
+  });
+
+  it("добавленная моделью формулировка попадает в ключевые слова и в адрес", async () => {
+    openAt("?q=ноутбук");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ synonyms: ["переносной компьютер"], cached: false }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+    render(<TendersView />);
+
+    fireEvent.click(screen.getByRole("button", { name: /формулировки/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "переносной компьютер" }));
+
+    const lastCall = replace.mock.calls.at(-1)?.[0] as string;
+    expect(decodeURIComponent(lastCall.replace(/\+/g, " "))).toContain("q2=переносной компьютер");
+    vi.unstubAllGlobals();
+  });
+
+  it("оценки модели видны в строках, а неподходящие можно скрыть", async () => {
+    openAt("?q=ноутбук");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async (_url: string, init: RequestInit) => {
+        const sent = JSON.parse(String(init.body)) as { candidates: { id: string }[] };
+        const verdicts: Record<string, { fit: string; reason: string }> = {};
+        sent.candidates.forEach((candidate, index) => {
+          verdicts[candidate.id] =
+            index === 0
+              ? { fit: "no", reason: "другое по смыслу" }
+              : { fit: "yes", reason: "то самое" };
+        });
+        return new Response(JSON.stringify({ verdicts, cached: false }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
+    render(<TendersView />);
+    const before = screen.getByText(/Найдено \d+ из/).textContent ?? "";
+
+    fireEvent.click(screen.getByRole("button", { name: /по смыслу/i }));
+    await screen.findAllByTestId("model-note");
+    expect(screen.getAllByTestId("model-note").length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByLabelText(/скрыть неподходящие/i));
+
+    const after = screen.getByText(/Найдено \d+ из/).textContent ?? "";
+    const num = (text: string) => Number(/Найдено (\d+)/.exec(text)?.[1]);
+    expect(num(after)).toBe(num(before) - 1);
+    vi.unstubAllGlobals();
+  });
+
   it("снятый фильтр убирает параметр из адреса", () => {
     openAt("?q=ноутбук");
     render(<TendersView />);
@@ -161,6 +250,8 @@ describe("TendersView — порядок выдачи по свежести", ()
   });
 
   it("результат последнего поиска стоит первым и отделён от остальной ленты", () => {
+    // Свежесть выбирается явно: по умолчанию выдачу ведёт Fit Score.
+    openAt("?sort=freshness");
     mount(feed());
 
     expect(screen.getByText(/Новые · платный поиск/)).toBeTruthy();
@@ -176,16 +267,37 @@ describe("TendersView — порядок выдачи по свежести", ()
     expect(replace).not.toHaveBeenCalled();
   });
 
-  it("выбранный порядок виден чипом, а снятие чипа возвращает слои", () => {
+  it("по умолчанию выдача идёт по Fit Score, без слоёв по свежести, и это названо словами", () => {
     mount(feed());
+
+    expect(screen.queryByText(/Новые · платный поиск/)).toBeNull();
+    expect(screen.getByText(/сначала самые подходящие вашей компании/)).toBeTruthy();
+  });
+
+  it("кнопка «Сначала новые» включает слои по свежести, «Самые подходящие» возвращает Fit Score", () => {
+    mount(feed());
+    const group = screen.getByRole("group", { name: "Порядок выдачи" });
+
+    fireEvent.click(within(group).getByRole("button", { name: "Сначала новые" }));
+    expect(screen.getByText(/Новые · платный поиск/)).toBeTruthy();
+
+    fireEvent.click(within(group).getByRole("button", { name: "Самые подходящие" }));
+    expect(screen.queryByText(/Новые · платный поиск/)).toBeNull();
+    expect(within(group).getByRole("button", { name: "Самые подходящие" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("выбранный порядок виден чипом, а снятие чипа возвращает порядок по Fit Score", () => {
+    openAt("?sort=freshness");
+    mount(feed());
+    expect(screen.getByText(/Новые · платный поиск/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Сортировать по НМЦК" }));
     expect(screen.getByText(/Порядок: по цене/)).toBeTruthy();
     expect(screen.queryByText(/Новые · платный поиск/)).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Снять фильтр: Порядок: по цене" }));
-    expect(screen.getByText(/Новые · платный поиск/)).toBeTruthy();
     expect(screen.queryByText(/Порядок: по цене/)).toBeNull();
+    expect(screen.getByText(/сначала самые подходящие вашей компании/)).toBeTruthy();
   });
 
   it("при запросе выдача идёт по приоритету, а не по слоям", () => {
@@ -212,6 +324,7 @@ describe("TendersView — порядок выдачи по свежести", ()
   });
 
   it("чип партии снимает ограничение и возвращает всю ленту", () => {
+    sessionStorage.setItem("tenderfit.feedShowAll", "1");
     openAt(`?batch=${encodeURIComponent(STAMP)}`);
     mount(feed());
 
@@ -219,6 +332,69 @@ describe("TendersView — порядок выдачи по свежести", ()
 
     expect(screen.getByText(/Найдено 11 из 11/)).toBeTruthy();
     expect(screen.getByText(demoTenders[0]!.subject)).toBeTruthy();
+    sessionStorage.clear();
+  });
+});
+
+/*
+  База закупок общая, а лента — личная. Без своего профиля человек видел
+  закупки, собранные под чужие профили (замечание 05.10.2026: «почему он
+  должен видеть мои закупки»). Теперь лента сначала спрашивает, что он ищет.
+*/
+describe("TendersView — своя лента вместо общей базы", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    vi.mocked(useRouter).mockReturnValue({ replace } as never);
+    vi.mocked(useTenderData).mockReturnValue({
+      profile: null,
+      rows: buildRows(),
+      loading: false,
+      error: null,
+      reload: vi.fn(),
+      syncKontur: vi.fn().mockResolvedValue(null),
+      syncState: { syncing: false, error: null, lastSynced: 0, progress: null, report: null },
+    } as never);
+    openAt("");
+  });
+
+  it("без профиля поиска вместо чужих закупок вопрос «Что вы ищете?»", () => {
+    render(<TendersView />);
+
+    expect(screen.getByText("Что вы ищете?")).toBeTruthy();
+    expect(screen.queryByText(demoTenders[0]!.subject)).toBeNull();
+  });
+
+  it("«Показать всю базу» — по явной просьбе, и выбор помнится во вкладке", () => {
+    render(<TendersView />);
+
+    fireEvent.click(screen.getByRole("button", { name: /всю базу/i }));
+
+    expect(screen.getByText(/Найдено 10 из 10/)).toBeTruthy();
+    expect(sessionStorage.getItem("tenderfit.feedShowAll")).toBe("1");
+  });
+
+  it("свой запрос в строке поиска работает и без профиля", () => {
+    openAt("?q=компьютеров");
+    render(<TendersView />);
+
+    expect(screen.queryByText("Что вы ищете?")).toBeNull();
+  });
+
+  it("ответ на вопрос сохраняет профиль и сразу показывает ленту по нему", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ jobId: "j1", status: "pending" }), { status: 200 })),
+    );
+    render(<TendersView />);
+    fireEvent.change(screen.getByLabelText("Что ищете"), { target: { value: "ноутбук" } });
+
+    fireEvent.click(screen.getByRole("button", { name: /сохранить и искать/i }));
+
+    expect(await screen.findByText(/Показаны закупки по словам профиля «ноутбук»/)).toBeTruthy();
+    expect(screen.getByText(/Ищу ваши закупки на площадках/)).toBeTruthy();
+    vi.unstubAllGlobals();
   });
 });
 
@@ -271,7 +447,149 @@ describe("TendersView — профиль поиска применяется к 
     openAt("");
     render(<TendersView />);
 
-    expect(screen.getByText(/Показаны закупки по профилю «Только ноутбуки»/)).toBeTruthy();
+    expect(screen.getByText(/Показаны закупки по словам профиля «Только ноутбуки»/)).toBeTruthy();
+  });
+
+  /** Профиль со словом «поставка» и регионом: из девяти демонстрационных закупок со словом «поставка» регион подходит одной. */
+  function regionProfile(region: string): void {
+    localStorage.setItem(
+      STORAGE_KEYS.searchProfiles,
+      JSON.stringify([
+        {
+          id: "sp-region",
+          name: "Поставки в регионе",
+          laws: [],
+          keywords: ["поставка"],
+          stopWords: [],
+          okpd2Codes: [],
+          regions: [region],
+          customerInns: [],
+          minPrice: null,
+          maxPrice: null,
+          onlyOpenForSubmission: true,
+          enabled: true,
+        },
+      ]),
+    );
+  }
+
+  /*
+    Два шага. Сначала находится всё по словам, по всей России; затем из
+    найденного исключается то, что не подходит под профиль. Скрытое названо
+    числом над таблицей и возвращается кнопкой. Раньше регион профиля либо
+    молча урезал выдачу до одной Московской области (замечание 05.10.2026),
+    либо, после правки, вообще не применялся, и «разные регионы» лезли в
+    выдачу несмотря на настроенный регион.
+  */
+  it("регион профиля поиска исключает чужие регионы, а число скрытого названо", () => {
+    regionProfile("Приморский край");
+    openAt("");
+    render(<TendersView />);
+
+    expect(screen.getByText(/Найдено 1 из 10/)).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toMatch(/Скрыто как не подходящее: 8/);
+    expect(screen.getByRole("status").textContent).toMatch(/регион: Приморский край/);
+  });
+
+  /*
+    Замечание 05.10.2026: человек выбрал «Порядок: свежие сверху», в адресе
+    появился параметр порядка, и лента перестала применять профиль поиска —
+    показывала всю базу вместо закупок его региона.
+  */
+  it("порядок в адресе не отключает профиль поиска", () => {
+    regionProfile("Приморский край");
+    openAt("?sort=freshness");
+    render(<TendersView />);
+
+    expect(screen.getByText(/Показаны закупки по словам профиля «Поставки в регионе»/)).toBeTruthy();
+    expect(screen.getByText(/Найдено 1 из 10/)).toBeTruthy();
+  });
+
+  it("адрес со словами профиля узнаётся как профиль: его регион действует", () => {
+    regionProfile("Приморский край");
+    openAt(`?q2=${encodeURIComponent("поставка")}`);
+    render(<TendersView />);
+
+    expect(screen.getByText(/Найдено 1 из 10/)).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toMatch(/регион: Приморский край/);
+  });
+
+  it("пустой профиль первым в списке не отключает профиль со словами", () => {
+    localStorage.setItem(
+      STORAGE_KEYS.searchProfiles,
+      JSON.stringify([
+        {
+          id: "sp-empty", name: "Пустой", laws: [], keywords: [], stopWords: [], okpd2Codes: [], regions: [],
+          customerInns: [], minPrice: null, maxPrice: null, onlyOpenForSubmission: true, enabled: true,
+        },
+        {
+          id: "sp-region", name: "Поставки в регионе", laws: [], keywords: ["поставка"], stopWords: [], okpd2Codes: [],
+          regions: ["Приморский край"], customerInns: [], minPrice: null, maxPrice: null,
+          onlyOpenForSubmission: true, enabled: true,
+        },
+      ]),
+    );
+    openAt("");
+    render(<TendersView />);
+
+    expect(screen.getByText(/Показаны закупки по словам профиля «Поставки в регионе»/)).toBeTruthy();
+    expect(screen.getByText(/Найдено 1 из 10/)).toBeTruthy();
+  });
+
+  it("старый адрес с другими словами и законом не отключает профиль: показывается профиль", () => {
+    regionProfile("Приморский край");
+    openAt(`?q2=${encodeURIComponent("старое слово")}&law=FZ_44&sort=freshness`);
+    render(<TendersView />);
+
+    expect(screen.getByText(/Показаны закупки по словам профиля «Поставки в регионе»/)).toBeTruthy();
+    expect(screen.getByText(/Найдено 1 из 10/)).toBeTruthy();
+  });
+
+  it("«Показать скрытые» возвращает исключённое, «Скрыть» убирает снова", () => {
+    regionProfile("Приморский край");
+    openAt("");
+    render(<TendersView />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Показать скрытые" }));
+    expect(screen.getByText(/Найдено 9 из 10/)).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toMatch(/Показаны и скрытые закупки \(8\)/);
+
+    fireEvent.click(screen.getByRole("button", { name: "Скрыть" }));
+    expect(screen.getByText(/Найдено 1 из 10/)).toBeTruthy();
+  });
+
+  it("профиль без региона и цены ничего не скрывает по условиям поиска", () => {
+    laptopProfile();
+    openAt("");
+    render(<TendersView />);
+
+    expect(screen.queryByText(/вне условий профиля поиска/)).toBeNull();
+  });
+
+  it("второй слой: счётчики оценки по профилю компании делят всю найденную выдачу", () => {
+    openAt("");
+    render(<TendersView />);
+
+    const group = screen.getByRole("group", { name: "Оценка по профилю компании" });
+    const text = group.textContent ?? "";
+    const counts = [...text.matchAll(/:\s*(\d+)/g)].map((m) => Number(m[1]));
+
+    expect(counts).toHaveLength(3);
+    expect(counts.reduce((a, b) => a + b, 0)).toBe(10);
+  });
+
+  it("нажатие на счётчик оставляет только эту оценку, повторное — снимает", () => {
+    openAt("");
+    render(<TendersView />);
+    const group = screen.getByRole("group", { name: "Оценка по профилю компании" });
+    const notFit = within(group).getByRole("button", { name: /Не подходит/ });
+
+    fireEvent.click(notFit);
+    expect(notFit.getAttribute("aria-pressed")).toBe("true");
+
+    fireEvent.click(notFit);
+    expect(notFit.getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByText(/Найдено 10 из 10/)).toBeTruthy();
   });
 
   it("«Показать все» снимает профиль и возвращает всю ленту", () => {
@@ -281,7 +599,7 @@ describe("TendersView — профиль поиска применяется к 
 
     fireEvent.click(screen.getByRole("button", { name: "Показать все" }));
 
-    expect(screen.queryByText(/Показаны закупки по профилю/)).toBeNull();
+    expect(screen.queryByText(/Показаны все закупки по словам профиля/)).toBeNull();
     expect(screen.getByText(/Найдено 10 из 10/)).toBeTruthy();
   });
 

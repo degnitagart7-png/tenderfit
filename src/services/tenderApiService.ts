@@ -54,7 +54,21 @@ export interface TenderFilters {
 }
 
 /** Преобразование TenderRowDB (из БД) в Tender (доменный объект). */
-function dbRowToTender(row: TenderRowDB): Tender {
+/** Запрос живого поиска из пометки строки (`raw_data.origin = "live"`). */
+function liveQueryOf(raw: TenderRowDB["raw_data"]): string | null {
+  if (raw === null || raw === undefined || raw["origin"] !== "live") return null;
+  const query = raw["query"];
+  return typeof query === "string" && query.trim() !== "" ? query : null;
+}
+
+/** Слова, под которые закупку отобрала модель (`raw_data.origin = "sense"`). */
+function senseKeywordsOf(raw: TenderRowDB["raw_data"]): string[] | null {
+  if (raw === null || raw === undefined || raw["origin"] !== "sense") return null;
+  const keywords = raw["keywords"];
+  return Array.isArray(keywords) ? keywords.filter((k): k is string => typeof k === "string") : null;
+}
+
+export function dbRowToTender(row: TenderRowDB): Tender {
   return {
     id: row.reg_number,
     regNumber: row.reg_number,
@@ -102,6 +116,8 @@ function dbRowToTender(row: TenderRowDB): Tender {
     eisUrl: row.eis_url ?? "",
     dataSource: row.data_source,
     changeLog: (row.change_log ?? []) as ChangeLogEntry[],
+    liveQuery: liveQueryOf(row.raw_data),
+    senseKeywords: senseKeywordsOf(row.raw_data),
     // Обе метки приезжают из БД как есть: по `synced_at` находится партия
     // последнего прогона, по `created_at` — новая закупка или уже лежала.
     // Придумывать значение вместо отсутствующего нельзя — порядок в списках
@@ -151,6 +167,16 @@ async function loadDocuments(regNumber: string): Promise<TenderDocument[]> {
   }
 }
 
+/** Сколько закупок просим за один запрос: максимум, который отдаёт ручка. */
+const FEED_PAGE_SIZE = 1000;
+
+/**
+ * Предел ленты. Выше — уже не «лента», а выгрузка: браузер держит всё в памяти
+ * и пересчитывает на каждое нажатие клавиши. Если база дорастёт сюда, пора
+ * переносить поиск на сервер, и предупреждение в консоли скажет об этом.
+ */
+const MAX_FEED_ROWS = 5000;
+
 export const tenderApiService = {
   /** Получение списка закупок с фильтрацией. */
   async list(filters?: TenderFilters): Promise<TenderListResponse> {
@@ -181,18 +207,68 @@ export const tenderApiService = {
   },
 
   /** Получение закупок как TenderRow[] для UI (с анализом и статусом воронки). */
+  /**
+   * Все закупки постранично.
+   *
+   * Ручка по умолчанию отдаёт пятьсот строк, а лента вызывала её без
+   * параметров. Пока в базе было 382 закупки, потолок был невидим; при росте
+   * базы лента молча обрезалась бы, а заголовок «Найдено N из N» продолжал бы
+   * утверждать, что N — это всё. Тихая потеря хуже видимой ошибки: человек не
+   * знает, что чего-то не увидел.
+   *
+   * Явный `limit` в фильтрах уважается: так просят одну закупку или короткий
+   * список, и обходить это не нужно.
+   */
+  async listAll(filters?: TenderFilters): Promise<TenderRowDB[]> {
+    if (filters?.limit !== undefined) return (await this.list(filters)).tenders;
+
+    const seen = new Set<string>();
+    const rows: TenderRowDB[] = [];
+    for (let offset = 0; offset < MAX_FEED_ROWS; offset += FEED_PAGE_SIZE) {
+      const page = (await this.list({ ...filters, limit: FEED_PAGE_SIZE, offset })).tenders;
+      for (const row of page) {
+        // Повтор на стыке страниц возможен, если базу пересобрали между двумя
+        // запросами: номер закупки уникален, и вторая копия не нужна.
+        if (seen.has(row.reg_number)) continue;
+        seen.add(row.reg_number);
+        rows.push(row);
+      }
+      if (page.length < FEED_PAGE_SIZE) return rows;
+    }
+    console.warn(
+      `Лента загружена не целиком: достигнут предел ${String(MAX_FEED_ROWS)} закупок. Остальные не показаны.`,
+    );
+    return rows;
+  },
+
   async getRows(profile: CompanyProfile, filters?: TenderFilters): Promise<TenderRow[]> {
-    const response = await this.list(filters);
+    const dbRows = await this.listAll(filters);
     const rows: TenderRow[] = [];
 
-    for (const row of response.tenders) {
-      const tender = dbRowToTender(row);
-      const analysis = await mockTenderAnalysisProvider.analyze(tender, profile);
-      rows.push({
-        tender,
-        analysis,
-        pipelineStatus: pipelineRepository.getStatus(tender.id),
-      });
+    for (const row of dbRows) {
+      /*
+        Одна закупка с изъяном не должна ронять всю ленту. 04.10.2026 анализ
+        упал на первой закупке без даты публикации, цикл не ловил исключение, и
+        вместо списка пользователь увидел текст ошибки валидации: сто двадцать
+        три нормальные закупки пропали вместе с одной непригодной.
+
+        Пропуск не молчаливый: номер и причина идут в журнал браузера, чтобы
+        закупка не исчезла бесследно. Известную причину (пустые даты) убрали
+        в схеме; здесь защита от следующей, которую принесёт новая площадка.
+      */
+      try {
+        const tender = dbRowToTender(row);
+        const analysis = await mockTenderAnalysisProvider.analyze(tender, profile);
+        rows.push({
+          tender,
+          analysis,
+          pipelineStatus: pipelineRepository.getStatus(tender.id),
+        });
+      } catch (error) {
+        console.error(
+          `Закупка ${row.reg_number} пропущена в ленте: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
 
     // Добавляем импортированные закупки (CSV/ручной ввод)

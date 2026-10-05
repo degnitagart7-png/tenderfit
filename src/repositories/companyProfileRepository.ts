@@ -1,7 +1,7 @@
 import type { CompanyProfile, SroMembership } from "@/domain/entities";
 import { readJSON, writeJSON, STORAGE_KEYS } from "@/lib/storage";
 import { demoCompanyProfile } from "@/mocks/companyProfile";
-import { emptyCompanyProfile } from "@/domain/emptyCompanyProfile";
+import { NO_AMOUNT_LIMIT, NO_DAYS_LIMIT, emptyCompanyProfile } from "@/domain/emptyCompanyProfile";
 import { inferSroKind } from "@/domain/scoring/admission";
 
 /**
@@ -80,6 +80,22 @@ function normalizeSroMembership(value: unknown, index: number): SroMembership {
  *
  * Пример подставляется, только когда его передали вторым доводом явно.
  */
+/**
+ * Потолок, равный нулю, — пустое поле, а не запрет. «Не дороже 0 ₽» снимало
+ * с рекомендаций каждую закупку с ценой, и они уходили в «Скрыто»
+ * (замечание 05.10.2026). Минимумы не трогаем: ноль там и значит «от нуля».
+ */
+function withoutZeroCeilings(r: CompanyProfile["restrictions"]): CompanyProfile["restrictions"] {
+  const amount = (v: number) => (Number.isFinite(v) && v > 0 ? v : NO_AMOUNT_LIMIT);
+  return {
+    ...r,
+    maxPrice: amount(r.maxPrice),
+    maxBidSecurity: amount(r.maxBidSecurity),
+    maxContractSecurity: amount(r.maxContractSecurity),
+    maxPaymentTermDays: Number.isFinite(r.maxPaymentTermDays) && r.maxPaymentTermDays > 0 ? r.maxPaymentTermDays : NO_DAYS_LIMIT,
+  };
+}
+
 export function normalizeSavedProfile(
   saved: unknown,
   base: CompanyProfile = emptyCompanyProfile,
@@ -95,10 +111,10 @@ export function normalizeSavedProfile(
       ...base.capabilities,
       ...asObject<CompanyProfile["capabilities"]>(raw.capabilities),
     },
-    restrictions: {
+    restrictions: withoutZeroCeilings({
       ...base.restrictions,
       ...asObject<CompanyProfile["restrictions"]>(raw.restrictions),
-    },
+    }),
     preferences: {
       ...base.preferences,
       ...asObject<CompanyProfile["preferences"]>(raw.preferences),

@@ -17,6 +17,16 @@ import { DashboardView } from "@/components/dashboard/DashboardView";
 import { URGENT_DEADLINE_DAYS } from "@/domain/scoring";
 import { formatTenderPrice } from "@/utils/format";
 
+/*
+  Контур отключён выключателем KONTUR_ENABLED (src/domain/features.ts). Этот файл
+  проверяет его спящий интерфейс, поэтому на время тестов выключатель включён;
+  поведение при выключенном Контуре проверяют отдельные тесты.
+*/
+vi.mock("@/domain/features", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/domain/features")>()),
+  KONTUR_ENABLED: true,
+}));
+
 vi.mock("@/hooks/useTenderData", () => ({
   useTenderData: vi.fn(),
 }));

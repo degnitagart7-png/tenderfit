@@ -454,6 +454,87 @@ describe("computeOperationalFit / computeFinancialFit", () => {
     t.deadlines.deliveryTermDays = 3;
     expect(computeOperationalFit(t, baseProfile)).toBeLessThan(100);
   });
+  /*
+    «Регион не определён» — не «другой регион». У трети закупок площадки
+    региона не печатают (разбор 05.10.2026: 40 из 139 закупок по стройке), и
+    штраф в 60 баллов за «вне рабочих регионов» опускал их в «Не подходит»,
+    хотя ответ на вопрос о регионе просто неизвестен. Неизвестность уже
+    отражена отдельной неопределённостью («Регион поставки не указан»),
+    которая отправляет закупку на ручную проверку.
+  */
+  it("неизвестный регион штрафуется меньше чужого, но ниже подтверждённого своего", () => {
+    const profile = {
+      ...baseProfile,
+      restrictions: { ...baseProfile.restrictions, workRegions: ["Республика Бурятия"] },
+    };
+    const unknown = makeTender({ region: UNKNOWN_REGION });
+    const foreign = makeTender({ region: "Москва" });
+    unknown.deadlines.deliveryTermDays = null;
+    foreign.deadlines.deliveryTermDays = null;
+
+    const own = makeTender({ region: "Республика Бурятия" });
+    own.deadlines.deliveryTermDays = null;
+
+    // Замечание 05.10.2026: закупки без региона стояли в выдаче выше закупок
+    // из региона компании — регион в оценке их не различал.
+    expect(computeOperationalFit(own, profile)).toBe(100);
+    expect(computeOperationalFit(unknown, profile)).toBeLessThan(100);
+    expect(computeOperationalFit(unknown, profile)).toBeGreaterThan(computeOperationalFit(foreign, profile));
+  });
+
+  /*
+    «Приоритетный регион» в профиле компании нигде не использовался: Бурятия
+    стояла в настройках, а выдача шла по всей России без всякого предпочтения
+    (разбор 05.10.2026). Приоритет не исключает остальные регионы, но поднимает
+    свой: закупка из приоритетного региона получает больше баллов, чем такая
+    же из другого известного региона, а неизвестный регион не наказывается.
+  */
+  describe("приоритетный регион", () => {
+    // Рабочие регионы сняты: проверяется именно приоритет, а не ограничение географии.
+    const withPriority = (regions: string[]) => ({
+      ...baseProfile,
+      restrictions: { ...baseProfile.restrictions, workRegions: [] },
+      preferences: { ...baseProfile.preferences, priorityRegions: regions },
+    });
+    const at = (region: string) => {
+      const t = makeTender({ region });
+      t.deadlines.deliveryTermDays = null;
+      return t;
+    };
+
+    it("закупка из приоритетного региона оценивается выше такой же из другого", () => {
+      const profile = withPriority(["Республика Бурятия"]);
+
+      expect(computeOperationalFit(at("Республика Бурятия"), profile)).toBeGreaterThan(
+        computeOperationalFit(at("Москва"), profile),
+      );
+    });
+
+    it("другой регион не исключается: оценка снижается умеренно, а не до нуля", () => {
+      const profile = withPriority(["Республика Бурятия"]);
+
+      expect(computeOperationalFit(at("Москва"), profile)).toBeGreaterThanOrEqual(80);
+    });
+
+    it("неизвестный регион ниже приоритетного, но выше чужого", () => {
+      const profile = withPriority(["Республика Бурятия"]);
+      const unknown = computeOperationalFit(at(UNKNOWN_REGION), profile);
+
+      expect(unknown).toBeLessThan(computeOperationalFit(at("Республика Бурятия"), profile));
+      expect(unknown).toBeGreaterThan(computeOperationalFit(at("Москва"), profile));
+    });
+
+    it("название сравнивается по тому, как его вводят: «Бурятия» и «Республика Бурятия» — одно", () => {
+      const profile = withPriority(["Бурятия"]);
+
+      expect(computeOperationalFit(at("Республика Бурятия"), profile)).toBe(100);
+    });
+
+    it("без приоритетных регионов оценка прежняя", () => {
+      expect(computeOperationalFit(at("Москва"), withPriority([]))).toBe(100);
+    });
+  });
+
   it("отсутствие аванса при запрете снижает financial fit", () => {
     const profile = {
       ...baseProfile,

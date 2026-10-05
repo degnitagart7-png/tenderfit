@@ -11,7 +11,6 @@ import {
   Building2,
   Search,
   Bell,
-  LogOut,
   Menu,
   X,
   FlaskConical,
@@ -19,6 +18,7 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
+import { AccountLink } from "@/components/layout/AccountLink";
 import { SiteFooter } from "@/components/layout/SiteFooter";
 
 interface NavItem {
@@ -224,17 +224,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
 
         <div className="px-3 py-3">
-          <Link
-            href="/login"
-            className="flex items-center gap-2.5 rounded-control px-3 py-2 text-[15.5px] text-muted-foreground hover:bg-panel hover:text-foreground"
-          >
-            <LogOut
-              className="h-[17px] w-[17px] text-faint"
-              strokeWidth={1.75}
-              aria-hidden
-            />{" "}
-            Выйти
-          </Link>
+          <AccountLink />
         </div>
       </aside>
 

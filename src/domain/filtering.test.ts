@@ -323,8 +323,10 @@ function batchRow(id: string, fitScore: number, patch: Partial<Tender> = {}) {
 }
 
 describe("сортировка «Свежесть + фит»", () => {
-  it("порядок по умолчанию — свежесть, а не чистый Fit Score", () => {
-    expect(defaultFilters.sortField).toBe("freshness");
+  it("порядок по умолчанию — Fit Score; свежесть выбирается явно", () => {
+    // Выдача отобрана по словам, и внутри неё первыми идут закупки, которые
+    // лучше всего подходят компании: первый слой находит, второй ранжирует.
+    expect(defaultFilters.sortField).toBe("fitScore");
   });
 
   it("слои идут сверху вниз: последний прогон, неделя, раньше, истёкшие", () => {
@@ -674,12 +676,65 @@ describe("видимость цены в ленте", () => {
 
 /* ============================== sortSearched ============================== */
 
+/*
+  Живой поиск ищет по запросу и по близким словам, предложенным моделью:
+  «строительство» — ещё «ремонт» и «реконструкция». Найденное по близкому слову
+  в названии слова «строительство» не содержит; без пометки происхождения оно
+  исчезло бы из ленты сразу после поиска, который его нашёл.
+*/
+describe("закупка, найденная живым поиском по близкому слову", () => {
+  const found = rowWith({ subject: "Капитальный ремонт кровли школы", liveQuery: "строительство" });
+
+  it("показывается по запросу, которым найдена, хотя слова в названии нет", () => {
+    expect(searchRows([found], withFilters({ search: "строительство" }))).toHaveLength(1);
+  });
+
+  it("регистр и пробелы запроса не важны", () => {
+    expect(searchRows([found], withFilters({ search: "  Строительство " }))).toHaveLength(1);
+  });
+
+  it("по другому запросу не показывается", () => {
+    expect(searchRows([found], withFilters({ search: "уборка" }))).toHaveLength(0);
+  });
+
+  it("слово-исключение сильнее пометки", () => {
+    expect(searchRows([found], withFilters({ search: "строительство -кровля" }))).toHaveLength(0);
+  });
+
+  it("закупка без пометки по-прежнему ищется только по словам", () => {
+    const plain = rowWith({ subject: "Капитальный ремонт кровли школы" });
+
+    expect(searchRows([plain], withFilters({ search: "строительство" }))).toHaveLength(0);
+  });
+});
+
+describe("закупка, отобранная моделью при обходе региона", () => {
+  const found = rowWith({
+    subject: "Устройство тротуара от остановки до переезда",
+    senseKeywords: ["строительство", "ремонт"],
+  });
+
+  it("показывается по слову профиля, под которое отобрана", () => {
+    expect(searchRows([found], withFilters({ searchKeywords: ["Ремонт", "кровля"] }))).toHaveLength(1);
+  });
+
+  it("по чужим словам не показывается", () => {
+    expect(searchRows([found], withFilters({ searchKeywords: ["юрист"] }))).toHaveLength(0);
+  });
+
+  it("живой поиск: запрос, заданный словом профиля, тоже находит свою закупку", () => {
+    const live = rowWith({ subject: "Благоустройство территории", liveQuery: "строительство" });
+
+    expect(searchRows([live], withFilters({ searchKeywords: ["строительство"] }))).toHaveLength(1);
+  });
+});
+
 describe("sortSearched", () => {
-  it("по релевантности совпадение в названии выше совпадения в документации", () => {
-    const inSubject = rowWith({ subject: "Поставка вентилей" });
-    const inDocuments = rowWith(
+  it("сортировка по релевантности идёт по убыванию оценки", () => {
+    const titleOnly = rowWith({ subject: "Поставка вентилей" });
+    const titleAndDocuments = rowWith(
       {
-        subject: "Поставка оборудования",
+        subject: "Поставка вентилей и оборудования",
         documents: [
           makeDocument({
             title: "Проект договора",
@@ -690,14 +745,25 @@ describe("sortSearched", () => {
       rows[1]!,
     );
     const hits = searchRows(
-      [inDocuments, inSubject],
+      [titleOnly, titleAndDocuments],
       withFilters({ search: "вентиль" }),
     );
     expect(hits).toHaveLength(2);
 
     const sorted = sortSearched(hits, "relevance", "desc");
-    expect(sorted[0]!.row.tender.subject).toBe("Поставка вентилей");
     expect(sorted[0]!.combined).toBeGreaterThanOrEqual(sorted[1]!.combined);
+  });
+
+  it("слово только в теле документации закупку не находит: предмет закупки назван в названии", () => {
+    const documentsOnly = rowWith(
+      {
+        subject: "Поставка оборудования",
+        documents: [makeDocument({ title: "Проект договора", text: "Упоминается вентиль запорный." })],
+      },
+      rows[1]!,
+    );
+
+    expect(searchRows([documentsOnly], withFilters({ search: "вентиль" }))).toHaveLength(0);
   });
 
   it("порядок прочих полей совпадает с sortRows", () => {
@@ -756,5 +822,68 @@ describe("фильтр по партии прогона", () => {
     );
 
     expect(ids).toEqual(["BATCH"]);
+  });
+});
+
+/**
+ * Переключатель «Скрыть закрытые».
+ *
+ * ЕИС отдаёт и закупки, приём заявок по которым давно закончился: замер
+ * 04.10.2026 — 43 из 116, самая старая закрылась 26 дней назад. Лента их не
+ * прячет, а помечает причиной («срок подачи истёк», вердикт «Не подходит») —
+ * так человек видит, что закупка есть и почему она не для него. Но 43 строки
+ * из 116 мешают читать список, и тем, кому закрытые не нужны, нужен способ их
+ * убрать, не теряя при этом ничего по умолчанию.
+ */
+describe("filterRows — скрыть закрытые", () => {
+  const HOUR = 3_600_000;
+
+  function rowDueIn(hours: number): TenderRow {
+    const base = demoTenders[0]!;
+    const tender: Tender = {
+      ...base,
+      id: `due-${String(hours)}`,
+      regNumber: `due-${String(hours)}`,
+      deadlines: {
+        ...base.deadlines,
+        submissionEnd: new Date(Date.now() + hours * HOUR).toISOString(),
+      },
+    };
+    return {
+      tender,
+      analysis: analyzeTender(tender, demoCompanyProfile),
+      pipelineStatus: pipelineRepository.getStatus(tender.id),
+    };
+  }
+
+  const closed = rowDueIn(-48);
+  const open = rowDueIn(72);
+  const noDeadline: TenderRow = (() => {
+    const row = rowDueIn(72);
+    return { ...row, tender: { ...row.tender, id: "no-deadline", deadlines: { ...row.tender.deadlines, submissionEnd: "" } } };
+  })();
+
+  it("по умолчанию закрытые остаются: их помечает вердикт, а не фильтр", () => {
+    const result = filterRows([closed, open], withFilters({}));
+
+    expect(result).toHaveLength(2);
+  });
+
+  it("с включённым переключателем закрытые уходят", () => {
+    const result = filterRows([closed, open], withFilters({ hideClosed: true }));
+
+    expect(result.map((row) => row.tender.id)).toEqual([open.tender.id]);
+  });
+
+  it("закупка без срока не считается закрытой: срок неизвестен, а не прошёл", () => {
+    const result = filterRows([noDeadline], withFilters({ hideClosed: true }));
+
+    expect(result).toHaveLength(1);
+  });
+
+  it("закрывающаяся через час ещё открыта", () => {
+    const result = filterRows([rowDueIn(1)], withFilters({ hideClosed: true }));
+
+    expect(result).toHaveLength(1);
   });
 });

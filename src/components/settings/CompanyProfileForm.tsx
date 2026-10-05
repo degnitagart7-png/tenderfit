@@ -1,5 +1,6 @@
 "use client";
 
+import { accountSync } from "@/services/accountSync";
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import type { CompanyProfile } from "@/domain/entities";
@@ -67,6 +68,7 @@ export function CompanyProfileForm({ initial }: { initial: CompanyProfile }) {
     setConsentError(false);
     saveConsent();
     companyProfileRepository.save(profile);
+    void accountSync.pushIfSignedIn();
     setSaved(true);
   };
 

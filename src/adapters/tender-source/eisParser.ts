@@ -4,6 +4,7 @@
  * поэтому данные можно получать обычным HTTP-запросом без браузера и ЭЦП.
  */
 import type { PlacingWay, TenderLaw } from "@/domain/enums";
+import { kladrId } from "@/domain/regionCodes";
 
 /** URL поисковой выдачи ЕИС с GET-параметрами.
  *
@@ -22,7 +23,35 @@ export function buildEisSearchUrl(params: {
   /** Составной идентификатор заказчика (см. buildCustomerIdOrg). */
   customerIdOrg?: string;
   offset?: number;
+  /**
+   * Размер страницы выдачи: 10, 20, 50 или 100. Обычный размер (10) параметр
+   * не передаёт — так было и работало.
+   */
+  recordsPerPage?: number;
   orderBy?: string;
+  /**
+   * Только закупки, где ещё идёт подача заявок (фильтр «Подача заявок», `af`).
+   * Без него выдача, отсортированная по дате, наполовину состоит из закрытых
+   * закупок, и лимит на слово кончается раньше, чем доходит до открытых.
+   */
+  onlyOpen?: boolean;
+  /** Номер страницы выдачи, с единицы. Первая страница параметра не передаёт. */
+  pageNumber?: number;
+  /**
+   * Регион заказчика, код из двух цифр («03» — Бурятия).
+   *
+   * ЕИС принимает его в формате КЛАДР сразу в двух параметрах: `customerPlace`
+   * и `customerPlaceCodes`. Один из них без второго выдачу не сужает
+   * (проверено 05.10.2026).
+   */
+  customerRegionCode?: string;
+  /**
+   * Размещены не раньше этой даты (ДД.ММ.ГГГГ). ЕИС держит давние извещения
+   * (2014, 2021) со статусом «Подача заявок», и без этой границы они занимали
+   * почти всю выдачу региона: из 300 строк по «ремонту» в Бурятии открытых
+   * было 15 (проверено 05.10.2026).
+   */
+  publishedFrom?: string;
 }): string {
   const base = params.baseUrl ?? "https://zakupki.gov.ru";
   const url = new URL("/epz/order/extendedsearch/results.html", base);
@@ -39,10 +68,51 @@ export function buildEisSearchUrl(params: {
     url.searchParams.set("okpd2", params.okpd2.join(","));
   if (params.customerIdOrg)
     url.searchParams.set("customerIdOrg", params.customerIdOrg);
-  url.searchParams.set("orderBy", params.orderBy ?? "UPDATE_DATE");
+  // Морфология включена всегда: без неё «юридические» не находит «юридических»,
+  // а словоформа в названии — норма.
+  url.searchParams.set("morphology", "on");
+  if (params.onlyOpen === true) url.searchParams.set("af", "on");
+  url.searchParams.set(
+    "orderBy",
+    params.orderBy ?? (params.onlyOpen === true ? "PUBLISH_DATE" : "UPDATE_DATE"),
+  );
   url.searchParams.set("sortDirection", "false");
   url.searchParams.set("offset", String(params.offset ?? 0));
+  if (params.publishedFrom) url.searchParams.set("publishDateFrom", params.publishedFrom);
+  if (params.customerRegionCode) {
+    const kladr = kladrId(params.customerRegionCode);
+    url.searchParams.set("customerPlace", kladr);
+    url.searchParams.set("customerPlaceCodes", kladr);
+  }
+  if (params.pageNumber !== undefined && params.pageNumber > 1) {
+    url.searchParams.set("pageNumber", String(params.pageNumber));
+  }
+  // ЕИС принимает размер страницы только с подчёркиванием: `_50`, а не `50`.
+  if (params.recordsPerPage !== undefined && params.recordsPerPage > 10) {
+    url.searchParams.set("recordsPerPage", `_${String(params.recordsPerPage)}`);
+  }
   return url.toString();
+}
+
+/**
+ * Размер страницы выдачи под нужное число закупок.
+ *
+ * Адаптер листал выдачу параметром `offset`, и ЕИС его игнорирует: проверено
+ * 04.10.2026 на живом сайте — `offset=0`, `10`, `20`, `30` вернули одни и те же
+ * десять закупок. Лимит при этом только обрезал первую страницу, поэтому живой
+ * поиск с лимитом 25 получал 10. Настоящие параметры — `pageNumber` и
+ * `recordsPerPage` (`_10`, `_20`, `_50`, `_100`): размер страницы один запрос
+ * берёт целиком, без цикла по страницам и без лишних обращений к сайту.
+ *
+ * Берётся наименьший допустимый размер, не меньший лимита; выше ста ЕИС не
+ * отдаёт. Нет лимита — обычная страница: безлимитный обход ЕИС не нужен.
+ */
+export function recordsPerPageFor(limit: number | undefined): 10 | 20 | 50 | 100 {
+  if (limit === undefined || !Number.isFinite(limit)) return 10;
+  if (limit <= 10) return 10;
+  if (limit <= 20) return 20;
+  if (limit <= 50) return 50;
+  return 100;
 }
 
 /** Составной идентификатор заказчика для параметра customerIdOrg.

@@ -78,6 +78,51 @@ export const syncJobRepository = {
   },
 
   /**
+   * Задание живого поиска, которое сейчас выполняется или ждёт.
+   *
+   * Живой поиск — это `full_sync` с запросом в payload: отдельного вида задания
+   * нет, потому что список видов закреплён ограничением в базе.
+   */
+  async findActiveLive(): Promise<SyncJobRow | null> {
+    const supabase = getSupabaseServerClient();
+    const { data, error } = await supabase
+      .from("sync_jobs")
+      .select("*")
+      .eq("kind", "full_sync")
+      .not("payload->>liveQuery", "is", null)
+      .in("status", ["pending", "processing"])
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      if (error.code === "PGRST116") return null;
+      throw error;
+    }
+    return (data as SyncJobRow | null) ?? null;
+  },
+
+  /** Последнее выполненное задание живого поиска по этому запросу. */
+  async findRecentLive(query: string): Promise<SyncJobRow | null> {
+    const supabase = getSupabaseServerClient();
+    const { data, error } = await supabase
+      .from("sync_jobs")
+      .select("*")
+      .eq("kind", "full_sync")
+      .eq("payload->>liveQuery", query)
+      .eq("status", "completed")
+      .order("finished_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      if (error.code === "PGRST116") return null;
+      throw error;
+    }
+    return (data as SyncJobRow | null) ?? null;
+  },
+
+  /**
    * Последняя смета по закупке, в любом состоянии.
    *
    * По ней открытая заново карточка показывает уже посчитанное, а не

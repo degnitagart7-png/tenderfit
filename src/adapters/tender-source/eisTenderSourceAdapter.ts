@@ -1,3 +1,5 @@
+import { regionCodeOf, type Region } from "@/domain/regionCodes";
+import { isRegionKnown } from "@/domain/entities";
 import * as cheerio from "cheerio";
 import type { Tender, TenderDocument } from "@/domain/entities";
 import { UNKNOWN_REGION } from "@/domain/entities";
@@ -13,9 +15,11 @@ import {
   parsePlacingWay,
   parsePrice,
   parseRuDate,
+  recordsPerPageFor,
 } from "@/adapters/tender-source/eisParser";
 import type { EisCustomerRef } from "@/adapters/tender-source/eisParser";
 import { buildEisUrl } from "@/domain/enums";
+import { fetchEisOkpd2 } from "@/adapters/tender-source/eisOkpd";
 
 /**
  * Реальный адаптер источника данных ЕИС (zakupki.gov.ru).
@@ -42,16 +46,35 @@ export interface EisAdapterOptions {
   rateLimitPerSec?: number;
   /** Максимум повторов при пустом ответе. */
   maxRetries?: number;
+  /**
+   * Базовая пауза после 403/429, мс. ЕИС временно блокирует частые запросы, и
+   * блокировка держится минуты: пауза растёт кратно номеру попытки.
+   */
+  blockedBackoffMs?: number;
   fetchImpl?: typeof fetch;
 }
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Сколько регионов за один запрос: каждый стоит отдельной выдачи. */
+const MAX_EIS_REGIONS = 3;
+
+/** Граница даты размещения в формате ЕИС (ДД.ММ.ГГГГ) или undefined. */
+function publishedFromOf(query: TenderSourceQuery): string | undefined {
+  const days = query.publishedWithinDays;
+  if (days === undefined || !Number.isFinite(days) || days <= 0) return undefined;
+  const date = new Date((query.nowMs ?? Date.now()) - days * 86_400_000);
+  const dd = String(date.getUTCDate()).padStart(2, "0");
+  const mm = String(date.getUTCMonth() + 1).padStart(2, "0");
+  return `${dd}.${mm}.${String(date.getUTCFullYear())}`;
+}
+
 export class EisTenderSourceAdapter implements TenderSourceAdapter {
   private readonly baseUrl: string;
   private readonly minIntervalMs: number;
   private readonly maxRetries: number;
+  private readonly blockedBackoffMs: number;
   private readonly fetchImpl: typeof fetch;
   private lastRequestAt = 0;
 
@@ -59,6 +82,7 @@ export class EisTenderSourceAdapter implements TenderSourceAdapter {
     this.baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
     this.minIntervalMs = 1000 / (options.rateLimitPerSec ?? 3);
     this.maxRetries = options.maxRetries ?? 3;
+    this.blockedBackoffMs = options.blockedBackoffMs ?? 15_000;
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -101,7 +125,10 @@ export class EisTenderSourceAdapter implements TenderSourceAdapter {
         }
         return html;
       }
-      await sleep(300 * 2 ** attempt);
+      // 403 и 429 — временная блокировка частых запросов: короткая пауза её не
+      // переживает, поэтому ждём 15, 30, 45 секунд. Пустой ответ из кэша — как раньше.
+      const blocked = res.status === 403 || res.status === 429;
+      await sleep(blocked ? this.blockedBackoffMs * attempt : 300 * 2 ** attempt);
     }
   }
 
@@ -167,18 +194,96 @@ export class EisTenderSourceAdapter implements TenderSourceAdapter {
       return merged.slice(0, limit);
     }
 
-    const url = buildEisSearchUrl({
-      baseUrl: this.baseUrl,
-      searchString: searchString || undefined,
-      laws: query.laws,
-      minPrice: query.minPrice,
-      maxPrice: query.maxPrice,
-      okpd2: query.okpd2Codes,
-      offset: 0,
-    });
-    const html = await this.getHtml(url);
-    const tenders = this.parseResults(html);
-    return tenders.slice(0, limit);
+    /*
+      Регион заказчика. ЕИС в выдаче региона не печатает, поэтому закупки были
+      «без региона» и проходили любой региональный фильтр, а по Бурятии в базе
+      нашлась одна закупка из 849. Теперь регион уходит в запрос кодом (до трёх
+      регионов, по запросу на каждый), и найденному проставляется этот регион.
+      Название, которое не удалось опознать, не ищется по чужому коду: тогда
+      поиск идёт по всей России.
+    */
+    const targets: Array<Region | null> = [];
+    for (const name of query.regions ?? []) {
+      const region = regionCodeOf(name);
+      if (region !== null && !targets.some((t) => t?.code === region.code)) targets.push(region);
+      if (targets.length >= MAX_EIS_REGIONS) break;
+    }
+    if (targets.length === 0) targets.push(null);
+
+    const collected: Tender[] = [];
+    const seenNumbers = new Set<string>();
+    for (const region of targets) {
+      const pages = await this.fetchPages(query, searchString, limit, region);
+      for (const tender of pages) {
+        if (seenNumbers.has(tender.regNumber)) continue;
+        seenNumbers.add(tender.regNumber);
+        collected.push(region === null || isRegionKnown(tender.region) ? tender : { ...tender, region: region.name });
+      }
+    }
+    return collected.slice(0, limit);
+  }
+
+  /**
+   * Страницы выдачи для одного региона (или для всей России, если region = null).
+   *
+   * Несколько страниц по сто: открытых закупок по теме бывает больше сотни, а
+   * лимит на слово обрезал выдачу раньше, чем доходило до нужных.
+   */
+  private async fetchPages(
+    query: TenderSourceQuery,
+    searchString: string,
+    limit: number,
+    region: Region | null,
+  ): Promise<Tender[]> {
+    const pages = Math.max(1, Math.floor(query.maxPages ?? 1));
+    const pageSize = pages > 1 ? 100 : recordsPerPageFor(query.limit);
+    const collected: Tender[] = [];
+    const seenNumbers = new Set<string>();
+    for (let pageNumber = 1; pageNumber <= pages; pageNumber += 1) {
+      const url = buildEisSearchUrl({
+        baseUrl: this.baseUrl,
+        searchString: searchString || undefined,
+        laws: query.laws,
+        minPrice: query.minPrice,
+        maxPrice: query.maxPrice,
+        okpd2: query.okpd2Codes,
+        onlyOpen: query.onlyOpen,
+        customerRegionCode: region?.code,
+        publishedFrom: publishedFromOf(query),
+        offset: 0,
+        pageNumber,
+        // Размер страницы под лимит: один запрос берёт 20, 50 или 100 закупок.
+        // Листать `offset`-ом нельзя — ЕИС его игнорирует (см. recordsPerPageFor).
+        recordsPerPage: pageSize,
+      });
+      const pageTenders = this.parseResults(await this.getHtml(url));
+      for (const tender of pageTenders) {
+        if (seenNumbers.has(tender.regNumber)) continue;
+        seenNumbers.add(tender.regNumber);
+        collected.push(tender);
+      }
+      // Короткая страница — выдача кончилась, следующая будет пустой.
+      if (pageTenders.length < pageSize || collected.length >= limit) break;
+    }
+    return collected.slice(0, limit);
+  }
+
+  /**
+   * Коды ОКПД2 закупки из её карточки.
+   *
+   * Выдача кода не печатает, он лежит на вкладке карточки: у 44-ФЗ в печатной
+   * форме, у 223-ФЗ на вкладке лотов. Запросы идут через тот же ограничитель
+   * частоты, что и поиск, а сбой даёт пустой список: код улучшает выдачу и не
+   * стоит упавшего прогона.
+   */
+  async fetchOkpd2(tender: Pick<Tender, "regNumber" | "law" | "eisUrl">): Promise<string[]> {
+    return fetchEisOkpd2(
+      { regNumber: tender.regNumber, law: tender.law, cardUrl: tender.eisUrl },
+      // Страницы карточек не содержат маркера выдачи, поэтому null: иначе
+      // проверка «усечённый ответ из кэша» отбраковывала бы нормальную страницу.
+      (url) => this.getHtml(url, null),
+      this.baseUrl,
+    );
   }
 
   async fetchTenderById(regNumber: string): Promise<Tender | null> {

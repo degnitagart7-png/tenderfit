@@ -6,7 +6,7 @@ import type {
   TenderLaw,
   TenderVerdict,
 } from "@/domain/entities";
-import { isClosingWithinDays } from "@/domain/scoring";
+import { isClosingWithinDays, isSubmissionExpired } from "@/domain/scoring";
 import {
   freshnessContextOf,
   freshnessLayer,
@@ -91,6 +91,17 @@ export interface TenderFilters {
    * Истёкшие не попадают — их отсекает блокер «Срок подачи истёк».
    */
   closingSoonOnly: boolean;
+  /**
+   * Скрыть закупки, приём заявок по которым уже закончился.
+   *
+   * По умолчанию выключено: закрытая закупка не пропадает, а помечается
+   * причиной — вердиктом «Не подходит» и блокером «Срок подачи истёк». Так
+   * человек видит, что закупка есть и почему она не для него. Но у ЕИС таких
+   * много (замер 04.10.2026: 43 из 116), и переключатель убирает их из списка,
+   * ничего не удаляя из базы. Закупка без срока закрытой не считается: срок
+   * неизвестен, а не прошёл.
+   */
+  hideClosed: boolean;
   hasHardBlockers: boolean | null;
   hasAdvance: boolean | null;
   hasSecurity: boolean | null;
@@ -141,12 +152,13 @@ export const defaultFilters: TenderFilters = {
   includeForeignCurrency: true,
   verdict: "ALL",
   closingSoonOnly: false,
+  hideClosed: false,
   hasHardBlockers: null,
   hasAdvance: null,
   hasSecurity: null,
   pipelineStatus: "ALL",
   batchStamp: null,
-  sortField: "freshness",
+  sortField: "fitScore",
   sortDir: "desc",
   page: 1,
   pageSize: 10,
@@ -276,6 +288,21 @@ export interface SearchedRow {
   combined: number;
 }
 
+const flatText = (text: string): string => text.replace(/\s+/g, " ").trim().toLowerCase();
+
+/**
+ * Закупка найдена по смыслу, хотя слов запроса в названии нет: живым поиском
+ * по этому запросу (близкие слова от модели) или моделью при обходе региона под
+ * эти слова профиля.
+ */
+function foundBySense(tender: TenderRow["tender"], filters: TenderFilters): boolean {
+  const asked = [filters.search, ...filters.searchKeywords].map(flatText).filter((t) => t !== "");
+  if (asked.length === 0) return false;
+  if (tender.liveQuery && asked.includes(flatText(tender.liveQuery))) return true;
+  const sense = (tender.senseKeywords ?? []).map(flatText);
+  return sense.some((word) => asked.includes(word));
+}
+
 /**
  * Применяет фильтры и возвращает строки вместе с объяснением совпадения.
  *
@@ -312,10 +339,16 @@ export function searchRows(
 
     // Текстовый поиск: основа, префикс основы, дословная фраза, коды ОКПД2 и
     // исключения — всё это считает textSearch, а не подстрока в трёх полях.
-    const match =
+    let match =
       textQuery === null
         ? EMPTY_MATCH
         : matchIndex(buildSearchIndex(tender), textQuery.query, textQuery.options);
+    // Найдено по смыслу: живым поиском по близкому слову или моделью при обходе
+    // региона. Слов запроса в названии нет, но закупка отобрана именно под этот
+    // запрос. Слово-исключение по-прежнему сильнее.
+    if (!match.matched && !match.excludedHit && foundBySense(tender, filters)) {
+      match = { ...EMPTY_MATCH, matched: true };
+    }
     if (!match.matched) continue;
 
     if (laws.length > 0 && !laws.includes(tender.law)) continue;
@@ -357,6 +390,9 @@ export function searchRows(
       filters.closingSoonOnly &&
       !isClosingWithinDays(tender.deadlines.submissionEnd)
     ) {
+      continue;
+    }
+    if (filters.hideClosed && isSubmissionExpired(tender.deadlines.submissionEnd)) {
       continue;
     }
     if (filters.hasHardBlockers === true && analysis.hardBlockers.length === 0) {

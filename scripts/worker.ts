@@ -80,6 +80,7 @@ import {
 import { syncJobRepository } from "../src/repositories/syncJobRepository";
 import type { SyncJobReport, SyncJobRow } from "../src/types/database";
 import { tracksFor, type SyncTrigger } from "../src/domain/sourceCadence";
+import { LIVE_RUN_CAP_MS, normalizeLiveQuery, normalizeLiveRegions, normalizeLiveSynonyms } from "../src/domain/liveSearch";
 
 loadEnv({ path: resolve(__dirname, "../.env.local") });
 
@@ -340,6 +341,8 @@ interface ScriptRun {
   tail: string[];
   /** Итоговая строка «Готово: …» из планового прогона, если она была напечатана. */
   summaryLine: string | null;
+  /** Прогон не уложился в отведённое время и был остановлен воркером. */
+  timedOut: boolean;
 }
 
 /**
@@ -351,6 +354,7 @@ interface ScriptRun {
 function runScript(
   script: string,
   extraEnv: Record<string, string> = {},
+  timeoutMs: number | null = null,
 ): Promise<ScriptRun> {
   return new Promise((resolveRun, rejectRun) => {
     let tsxCli: string;
@@ -374,6 +378,18 @@ function runScript(
     }
 
     currentChild = child;
+    // Предел времени задаётся только живому поиску: он ничего не удаляет, и
+    // остановка безопасна. Плановый прогон так не останавливают: он пересоздаёт
+    // строки источника, и убитый на середине оставил бы источник без данных.
+    let timedOut = false;
+    const timer =
+      timeoutMs === null
+        ? null
+        : setTimeout(() => {
+            timedOut = true;
+            log(`прогон идёт дольше ${Math.round(timeoutMs / 60_000)} мин — останавливаю`);
+            child.kill("SIGTERM");
+          }, timeoutMs);
     const tail: string[] = [];
     const pipe = (chunk: Buffer): void => {
       process.stdout.write(chunk);
@@ -388,14 +404,16 @@ function runScript(
     child.stdout?.on("data", pipe);
     child.stderr?.on("data", pipe);
     child.on("error", (err) => {
+      if (timer !== null) clearTimeout(timer);
       currentChild = null;
       rejectRun(err);
     });
     child.on("close", (code, signal) => {
+      if (timer !== null) clearTimeout(timer);
       currentChild = null;
       const summaryLine =
         [...tail].reverse().find((line) => line.startsWith("Готово")) ?? null;
-      resolveRun({ code, signal, tail, summaryLine });
+      resolveRun({ code, signal, tail, summaryLine, timedOut });
     });
   });
 }
@@ -404,6 +422,8 @@ interface FullSyncResult {
   ok: boolean;
   note: string | null;
   error: string | null;
+  /** Прогон остановлен по времени: не сбой источников, а предел, который мы сами задали. */
+  timedOut: boolean;
 }
 
 /**
@@ -418,6 +438,8 @@ async function performFullSync(
   config: WorkerConfig,
   reason: string,
   trigger: SyncTrigger,
+  extraEnv: Record<string, string> = {},
+  timeoutMs: number | null = null,
 ): Promise<FullSyncResult> {
   const startedAt = new Date().toISOString();
   await beat(config, { lastFullSyncAt: startedAt });
@@ -428,7 +450,7 @@ async function performFullSync(
   // Плановому запуску достаются только подошедшие треки, человеку — все: см.
   // `tracksFor`. Решение передаётся скрипту переменной окружения, а не
   // аргументом, потому что воркер запускает его без аргументов.
-  const run = await runScript(SYNC_SCRIPT, { SYNC_TRACKS: tracksFor(trigger) });
+  const run = await runScript(SYNC_SCRIPT, { SYNC_TRACKS: tracksFor(trigger), ...extraEnv }, timeoutMs);
   const ok = run.code === 0;
   const error = ok
     ? null
@@ -442,7 +464,7 @@ async function performFullSync(
       : `плановый прогон не удался за ${secondsSince(started)} с: ${error}`,
   );
 
-  return { ok, note: run.summaryLine, error };
+  return { ok, note: run.summaryLine, error, timedOut: run.timedOut };
 }
 
 /**
@@ -505,8 +527,46 @@ async function runDocumentsJob(
   };
 }
 
-async function runFullSyncJob(config: WorkerConfig): Promise<SyncJobReport> {
-  const run = await performFullSync(config, "задание из очереди", "queued");
+async function runFullSyncJob(job: SyncJobRow, config: WorkerConfig): Promise<SyncJobReport> {
+  /*
+    Задание с запросом — живой поиск: ищем этот запрос на бесплатных площадках
+    и только добавляем найденное. Запрос чистится заново: payload пришёл из
+    базы, куда его мог записать кто угодно, и скрипту он уходит переменной
+    окружения. Непригодный запрос — отказ задания, а не молчаливый полный
+    прогон: иначе «найти юристов» превратилось бы в обход всех источников со
+    всеми побочными эффектами.
+  */
+  const rawLive = job.payload?.liveQuery;
+  const liveQuery = rawLive === undefined ? null : normalizeLiveQuery(rawLive);
+  if (rawLive !== undefined && liveQuery === null) {
+    throw new Error("В задании живого поиска непригодный запрос");
+  }
+
+  const run = await performFullSync(
+    config,
+    liveQuery === null ? "задание из очереди" : `живой поиск «${liveQuery}»`,
+    "queued",
+    liveQuery === null
+      ? {}
+      : {
+          SYNC_LIVE_QUERY: liveQuery,
+          // Регионы чистятся заново: payload пришёл из базы, а скрипту уходит переменной окружения.
+          SYNC_LIVE_REGIONS: JSON.stringify(normalizeLiveRegions(job.payload?.liveRegions)),
+          SYNC_LIVE_KEYWORDS: JSON.stringify(normalizeLiveSynonyms(liveQuery, job.payload?.liveKeywords)),
+        },
+    liveQuery === null ? null : LIVE_RUN_CAP_MS,
+  );
+  /*
+    Живой поиск, не уложившийся в предел, заканчивается как выполненный с
+    пометкой, а не как сбой: сбой вернул бы задание в очередь, и ещё два
+    одинаковых прогона по семь минут заблокировали бы воркер на двадцать минут
+    ради запроса, который и в первый раз не уложился.
+  */
+  if (run.timedOut) {
+    return {
+      note: `Поиск не уложился в ${String(LIVE_RUN_CAP_MS / 60_000)} минут и остановлен: повторите запрос позже или уточните его.`,
+    };
+  }
   if (!run.ok)
     throw new Error(run.error ?? `${SYNC_SCRIPT} завершился с ошибкой`);
   return { note: run.note ?? "плановый прогон выполнен" };
@@ -686,7 +746,7 @@ async function processOneJob(config: WorkerConfig): Promise<void> {
         : job.kind === "estimate"
           ? await runEstimateJob(job, config)
           : job.kind === "full_sync"
-            ? await runFullSyncJob(config)
+            ? await runFullSyncJob(job, config)
             : unknownJobKind(job);
 
     await syncJobRepository.complete(job.id, report);

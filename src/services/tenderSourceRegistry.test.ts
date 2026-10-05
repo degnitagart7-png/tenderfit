@@ -51,9 +51,8 @@ describe("реестр привязок источника", () => {
       expect(typeof b.honoursRegions, b.source).toBe("boolean");
     }
     // Факты из осмотра источников, а не догадка:
-    //   ЕИС       — регионального фильтра в GET-выдаче нет (docs/ACCESS_EIS.md),
-    //               и в самой выдаче региона тоже нет, поэтому отобрать по нему
-    //               нельзя ни на запросе, ни после него;
+    //   ЕИС       — фильтр по региону заказчика есть в запросе (customerPlace +
+    //               customerPlaceCodes, код по КЛАДР), проверено 05.10.2026;
     //   ТЭК-Торг  — в запросе SOAP нет ни одного параметра региона, зато регион
     //               приходит в ответе адресом организатора и местом поставки лота,
     //               поэтому адаптер применяет фильтр профиля на своей стороне;
@@ -65,7 +64,7 @@ describe("реестр привязок источника", () => {
     //               карточка печатает регион и адрес поставки лота, поэтому
     //               отсеивает адаптер сам;
     //   Контур    — принимает только UUID регионов, поэтому отсеивает выдачу сам.
-    expect(sourceBinding("EIS")?.honoursRegions).toBe(false);
+    expect(sourceBinding("EIS")?.honoursRegions).toBe(true);
     expect(sourceBinding("TEK_TORG")?.honoursRegions).toBe(true);
     expect(sourceBinding("SBER_AST")?.honoursRegions).toBe(true);
     expect(sourceBinding("ROSELTORG")?.honoursRegions).toBe(true);

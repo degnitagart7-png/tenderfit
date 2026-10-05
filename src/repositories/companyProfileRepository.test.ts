@@ -7,6 +7,8 @@ import {
 import { demoCompanyProfile } from "@/mocks/companyProfile";
 import { STORAGE_KEYS } from "@/lib/storage";
 import {
+  NO_AMOUNT_LIMIT,
+  NO_DAYS_LIMIT,
   emptyCompanyProfile,
   profileDescribesSubject,
 } from "@/domain/emptyCompanyProfile";
@@ -23,6 +25,39 @@ const LEGACY_SRO = {
   number: "СРО-С-000-000001",
   confirmed: true,
 };
+
+/*
+  Замечание 05.10.2026: в анкете стояли «максимальная цена 0», «обеспечение
+  заявки 0» и «обеспечение контракта 0» — пустые поля, сохранённые нулём.
+  Оценка читала их как «не дороже 0 ₽», каждая закупка с ценой получала
+  «Не подходит» и уходила в «Скрыто». Потолок, равный нулю, смысла не имеет:
+  это «без ограничения».
+*/
+describe("normalizeSavedProfile — нулевые потолки", () => {
+  it("потолок цены и обеспечений, равный нулю, читается как «без ограничения»", () => {
+    const profile = normalizeSavedProfile({
+      restrictions: { maxPrice: 0, minPrice: 0, maxBidSecurity: 0, maxContractSecurity: 0 },
+    });
+
+    expect(profile.restrictions.maxPrice).toBe(NO_AMOUNT_LIMIT);
+    expect(profile.restrictions.maxBidSecurity).toBe(NO_AMOUNT_LIMIT);
+    expect(profile.restrictions.maxContractSecurity).toBe(NO_AMOUNT_LIMIT);
+    expect(profile.restrictions.minPrice).toBe(0);
+  });
+
+  it("настоящий потолок сохраняется", () => {
+    const profile = normalizeSavedProfile({ restrictions: { maxPrice: 5_000_000, maxBidSecurity: 100_000 } });
+
+    expect(profile.restrictions.maxPrice).toBe(5_000_000);
+    expect(profile.restrictions.maxBidSecurity).toBe(100_000);
+  });
+
+  it("срок оплаты 0 дней тоже не запрет всего: читается как «без ограничения»", () => {
+    const profile = normalizeSavedProfile({ restrictions: { maxPaymentTermDays: 0 } });
+
+    expect(profile.restrictions.maxPaymentTermDays).toBe(NO_DAYS_LIMIT);
+  });
+});
 
 describe("normalizeSavedProfile — допуск СРО старой схемы", () => {
   it("вид работ определяется по наименованию из выписки", () => {

@@ -1,3 +1,4 @@
+import { KONTUR_DISABLED_MESSAGE, KONTUR_ENABLED } from "@/domain/features";
 import { NextRequest, NextResponse } from "next/server";
 import type { KonturCardRefusal } from "@/domain/konturCardRequest";
 import { describeError } from "@/lib/errors";
@@ -68,6 +69,9 @@ function unavailableResponse(error: unknown): NextResponse {
  * 503, если база не настроена или не отвечает.
  */
 export async function GET(request: NextRequest): Promise<NextResponse> {
+  if (!KONTUR_ENABLED) {
+    return NextResponse.json({ error: KONTUR_DISABLED_MESSAGE }, { status: 410 });
+  }
   const regNumber = request.nextUrl.searchParams.get("regNumber")?.trim() ?? "";
   if (regNumber === "") {
     return NextResponse.json({ error: "Не указан номер закупки (regNumber)" }, { status: 400 });
@@ -101,6 +105,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
  * отказа (см. REFUSAL_STATUS) · 503, если очередь недоступна.
  */
 export async function POST(request: NextRequest): Promise<NextResponse> {
+  if (!KONTUR_ENABLED) {
+    return NextResponse.json({ error: KONTUR_DISABLED_MESSAGE }, { status: 410 });
+  }
   if (!isConfigured()) return unconfigured();
 
   let body: { regNumber?: unknown };

@@ -4,6 +4,16 @@ import { DeepAnalysisPanel } from "@/components/tenders/DeepAnalysisPanel";
 import { deepAnalysisService } from "@/services/deepAnalysisService";
 import type { DeepAnalysisStatus, KonturCardStatus } from "@/services/deepAnalysisService";
 
+/*
+  Контур отключён выключателем KONTUR_ENABLED (src/domain/features.ts). Этот файл
+  проверяет его спящий интерфейс, поэтому на время тестов выключатель включён;
+  поведение при выключенном Контуре проверяют отдельные тесты.
+*/
+vi.mock("@/domain/features", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/domain/features")>()),
+  KONTUR_ENABLED: true,
+}));
+
 vi.mock("@/services/deepAnalysisService", () => ({
   deepAnalysisService: {
     getStatus: vi.fn(),

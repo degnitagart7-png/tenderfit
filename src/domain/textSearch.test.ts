@@ -350,6 +350,7 @@ describe("buildCorpus", () => {
       okpd2Codes: [],
     });
     expect(buildCorpus(tender)).toEqual({
+      head: "",
       subject: "",
       items: "",
       documents: "",

@@ -105,13 +105,13 @@ describe("activeFilterChips", () => {
   it("порядок по умолчанию чипом не показывается", () => {
     expect(activeFilterChips(defaultFilters)).toEqual([]);
     expect(
-      activeFilterChips({ ...defaultFilters, sortField: "freshness" }).map((c) => c.id),
+      activeFilterChips({ ...defaultFilters, sortField: "fitScore" }).map((c) => c.id),
     ).not.toContain("sortField");
   });
 
   it("снятие чипа порядка убирает параметр sort из адреса", () => {
-    const filters: TenderFilters = { ...defaultFilters, sortField: "fitScore" };
-    expect(filtersToSearchParams(filters).get("sort")).toBe("fitScore");
+    const filters: TenderFilters = { ...defaultFilters, sortField: "freshness" };
+    expect(filtersToSearchParams(filters).get("sort")).toBe("freshness");
 
     const chip = activeFilterChips(filters).find((c) => c.id === "sortField");
     const next = { ...filters, ...chip!.reset };
@@ -144,5 +144,25 @@ describe("чип партии прогона", () => {
 
   it("без партии чипа нет", () => {
     expect(activeFilterChips(defaultFilters)).toEqual([]);
+  });
+});
+
+describe("чип «Без закрытых»", () => {
+  it("появляется, когда закрытые скрыты", () => {
+    const chips = activeFilterChips({ ...defaultFilters, hideClosed: true });
+
+    expect(chips.map((chip) => chip.label)).toContain("Без закрытых");
+  });
+
+  it("снятие чипа возвращает закрытые", () => {
+    const chip = activeFilterChips({ ...defaultFilters, hideClosed: true }).find(
+      (c) => c.label === "Без закрытых",
+    );
+
+    expect(chip?.reset).toMatchObject({ hideClosed: false });
+  });
+
+  it("без переключателя чипа нет", () => {
+    expect(activeFilterChips(defaultFilters).map((chip) => chip.label)).not.toContain("Без закрытых");
   });
 });
