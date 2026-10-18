@@ -337,7 +337,14 @@ function etpgpbRegion(card: EtpgpbCard, customer: { address: string }): string {
   const titleFirst = bare.length > 0 || lotRegionIsOfficeDefault(lotRegions, offices, titles);
   return regionFromAddresses([
     ...deliveries.filter((address) => !isWeakDeliveryAddress(address, offices)),
-    ...(titleFirst ? [...titles, ...lotRegions] : [...lotRegions, ...titles]),
+    // При голом городе в месте поставки `lot_regions` ещё ненадёжнее его: у ремонта на
+    // ТЭЦ-21 «ТГК-1» (Петербург) в месте поставки «Санкт-Петербург», а `lot_regions` —
+    // «Москва», как и у ремонта в Самаре. Город из места поставки идёт раньше.
+    ...(bare.length > 0
+      ? [...titles, ...bare, ...lotRegions]
+      : titleFirst
+        ? [...titles, ...lotRegions]
+        : [...lotRegions, ...titles]),
     ...bare,
     ...card.regionNames,
     card.region,

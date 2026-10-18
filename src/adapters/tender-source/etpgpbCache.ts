@@ -42,8 +42,9 @@ export const ETPGPB_CACHE_SCHEMA = 1;
  * разбора; кэш карты сайта (115 МБ при холодном старте) от этого не сбрасывается.
  * 2 — регион: голый город организатора в месте поставки уступает названию (19.10.2026).
  * 3 — регион: lot_regions, повторяющий офис заказчика, уступает прямо названному субъекту.
+ * 4 — регион: голый город в месте поставки сильнее lot_regions.
  */
-export const ETPGPB_CARD_CACHE_SCHEMA = 3;
+export const ETPGPB_CARD_CACHE_SCHEMA = 4;
 
 export const ETPGPB_SITEMAP_CACHE_FILE = "etpgpb-sitemap-cache.json";
 export const ETPGPB_CARD_CACHE_FILE = "etpgpb-card-cache.json";
