@@ -50,9 +50,14 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   if (!body.ok) return body.response;
 
   try {
+    /*
+      Описание компании клиента (companyNote) в модель не уходит (решение владельца 19.10.2026):
+      модель работает через зарубежного провайдера, а данные клиентов храним и обрабатываем в РФ
+      (152-ФЗ). Поле принимается для совместимости со старыми вкладками, но отбрасывается здесь,
+      на сервере; оценка по смыслу идёт по запросу и названиям закупок.
+    */
     const { verdicts, cached } = await searchAssist.rerank({
       query: body.data.query,
-      ...(body.data.companyNote === undefined ? {} : { companyNote: body.data.companyNote }),
       candidates: body.data.candidates,
     });
     return NextResponse.json({ verdicts, cached });

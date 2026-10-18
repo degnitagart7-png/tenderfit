@@ -129,16 +129,14 @@ describe("POST /api/search/rerank", () => {
     expect(response.status).toBe(400);
   });
 
-  it("описание компании передаётся в сервис", async () => {
+  it("описание компании клиента в модель не уходит (152-ФЗ, с 19.10.2026)", async () => {
     vi.mocked(searchAssist.rerank).mockResolvedValue({ verdicts: {}, cached: false, tokens: 1 });
 
     await rerankPost(
       post("/api/search/rerank", { query: "q", companyNote: "юридическая фирма", candidates }),
     );
 
-    expect(vi.mocked(searchAssist.rerank).mock.calls[0]?.[0]).toMatchObject({
-      companyNote: "юридическая фирма",
-    });
+    expect(vi.mocked(searchAssist.rerank).mock.calls[0]?.[0]).not.toHaveProperty("companyNote");
   });
 
   it("сбой модели — 502", async () => {
