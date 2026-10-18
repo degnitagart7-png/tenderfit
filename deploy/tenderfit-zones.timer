@@ -1,0 +1,23 @@
+# Таймер ночного обновления ценовых зон: раз в сутки, ночью по времени сервера.
+#
+#   sudo cp deploy/tenderfit-zones.service deploy/tenderfit-zones.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now tenderfit-zones.timer
+#   systemctl list-timers tenderfit-zones.timer      # когда следующий запуск
+#
+# Сам запуск дешёвый: скрипт решает, есть ли новый период. Пересборка идёт только когда Минстрой
+# опубликовал новые цены (раз в квартал) или появилась зона без сборки.
+
+[Unit]
+Description=TenderFit — ночное обновление ценовых зон ФГИС ЦС (раз в сутки)
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+# Разброс, чтобы не бить в ФГИС ЦС ровно в одну минуту со всеми остальными.
+RandomizedDelaySec=15min
+# Сервер был выключен в 02:30 — запуск при ближайшей загрузке, а не пропуск ночи.
+Persistent=true
+Unit=tenderfit-zones.service
+
+[Install]
+WantedBy=timers.target

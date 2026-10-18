@@ -1,0 +1,607 @@
+/*
+  Раздел «Полезное» (/poleznoe).
+
+  Оформление взято с промо-страницы (public/promo/index.html): та же палитра,
+  оранжевый акцент #F2541B, заголовки Onest, текст Inter. Кабинет светлый, а
+  промо и эти страницы следуют теме системы, потому что их читают из поиска,
+  часто вечером с телефона. Токены заданы на .pz, а не на :root, чтобы не
+  затронуть кабинет. Всё в одном файле с префиксом pz-: Tailwind-классы для
+  длинного текста с таблицами были бы нечитаемы.
+
+  Чтение: колонка до 68 знаков в строке, шрифт 17px на телефоне и 18px от
+  720px, межстрочный 1.7. Таблицы прокручиваются внутри своего контейнера.
+*/
+.pz {
+  --pz-bg: #f5f3ef;
+  --pz-bg-2: #ece9e3;
+  --pz-panel: #ffffff;
+  --pz-ink: #1f1c19;
+  --pz-ink-2: #48433d;
+  --pz-muted: #6f6a63;
+  --pz-line: #ddd8d1;
+  --pz-hover: rgba(26, 24, 22, 0.06);
+  --pz-link: #c2410c;
+  --pz-btn: #d14311;
+  --pz-btn-hover: #b3380d;
+  --pz-note-bg: #fff6f1;
+  --pz-note-line: #fed7c4;
+  --pz-display: "Onest", "Inter", system-ui, sans-serif;
+  --pz-ui: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background: var(--pz-bg);
+  color: var(--pz-ink);
+  font-family: var(--pz-ui);
+  font-size: 17px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  /* Ничто в колонке не должно раздвигать страницу вширь. */
+  overflow-x: clip;
+}
+@media (prefers-color-scheme: dark) {
+  .pz {
+    --pz-bg: #161411;
+    --pz-bg-2: #1e1b17;
+    --pz-panel: #221f1a;
+    --pz-ink: #f3f1ec;
+    --pz-ink-2: #d6d1c9;
+    --pz-muted: #a8a29a;
+    --pz-line: #36312b;
+    --pz-hover: rgba(255, 255, 255, 0.08);
+    --pz-link: #ff8e62;
+    --pz-note-bg: #2a211b;
+    --pz-note-line: #5a3a2a;
+    color-scheme: dark;
+  }
+}
+/* Подложка под «резиновой» прокруткой браузера: html красится значениями токенов вручную. */
+html:has(.pz) {
+  background: #f5f3ef;
+}
+@media (prefers-color-scheme: dark) {
+  html:has(.pz) {
+    background: #161411;
+  }
+}
+
+.pz a {
+  color: inherit;
+}
+.pz a:focus-visible,
+.pz-table-wrap:focus-visible {
+  outline: 3px solid #f2541b;
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.pz-skip {
+  position: absolute;
+  left: -9999px;
+  top: 8px;
+  z-index: 50;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--pz-panel);
+  color: var(--pz-ink);
+}
+.pz-skip:focus {
+  left: 16px;
+}
+
+/* ---------- Шапка и подвал ---------- */
+.pz-header {
+  border-bottom: 1px solid var(--pz-line);
+  background: var(--pz-bg);
+}
+.pz-header-in {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 10px 16px;
+}
+.pz-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--pz-display);
+  font-weight: 700;
+  font-size: 17px;
+  letter-spacing: -0.01em;
+  text-decoration: none;
+}
+.pz-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.pz-nav a {
+  padding: 8px 11px;
+  border-radius: 999px;
+  font-size: 15px;
+  color: var(--pz-ink-2);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.pz-nav a:hover {
+  background: var(--pz-hover);
+  color: var(--pz-ink);
+}
+.pz-nav .pz-nav-reg {
+  margin-left: 4px;
+  padding-inline: 14px;
+  background: var(--pz-btn);
+  color: #fff;
+  font-weight: 600;
+}
+.pz-nav .pz-nav-reg:hover {
+  background: var(--pz-btn-hover);
+  color: #fff;
+}
+@media (max-width: 640px) {
+  .pz-nav-features {
+    display: none;
+  }
+}
+@media (max-width: 440px) {
+  .pz-nav-login {
+    display: none;
+  }
+  .pz-nav a {
+    padding-inline: 9px;
+  }
+}
+
+.pz-main {
+  flex: 1;
+}
+
+.pz-footer {
+  margin-top: 48px;
+  border-top: 1px solid var(--pz-line);
+  background: var(--pz-bg-2);
+  color: var(--pz-muted);
+  font-size: 14px;
+}
+.pz-footer-in {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 10px 24px;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 22px 16px;
+}
+.pz-footer p {
+  margin: 0;
+}
+.pz-footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+}
+.pz-footer-links a {
+  color: var(--pz-ink-2);
+  text-decoration: none;
+}
+.pz-footer-links a:hover {
+  text-decoration: underline;
+}
+
+/* ---------- Колонка ---------- */
+.pz-wrap {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 20px 16px 8px;
+}
+.pz-wrap-wide {
+  max-width: 880px;
+}
+
+.pz-crumbs ol {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 14px;
+  color: var(--pz-muted);
+}
+.pz-crumbs li + li::before {
+  content: "/";
+  margin-inline: 8px;
+  color: var(--pz-line);
+}
+.pz-crumbs a {
+  text-decoration: none;
+}
+.pz-crumbs a:hover {
+  text-decoration: underline;
+}
+.pz-crumbs [aria-current="page"] {
+  color: var(--pz-ink-2);
+}
+
+/* ---------- Заголовок статьи ---------- */
+.pz-head {
+  margin: 20px 0 8px;
+}
+.pz-eyebrow {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--pz-link);
+}
+.pz h1,
+.pz h2,
+.pz h3 {
+  font-family: var(--pz-display);
+  letter-spacing: -0.025em;
+  text-wrap: balance;
+  font-weight: 700;
+  color: var(--pz-ink);
+}
+.pz h1 {
+  margin: 0;
+  font-size: clamp(28px, 5.4vw, 40px);
+  line-height: 1.12;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  overflow-wrap: break-word;
+}
+.pz-lead {
+  margin: 18px 0 0;
+  font-size: 19px;
+  line-height: 1.6;
+  color: var(--pz-ink-2);
+  max-width: 68ch;
+}
+@media (min-width: 720px) {
+  .pz-lead {
+    font-size: 21px;
+  }
+}
+.pz-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 16px 0 0;
+  font-size: 14px;
+  color: var(--pz-muted);
+}
+
+/* ---------- Оглавление ---------- */
+.pz-toc {
+  margin: 24px 0 8px;
+  padding: 16px 18px;
+  border: 1px solid var(--pz-line);
+  border-radius: 14px;
+  background: var(--pz-panel);
+}
+.pz-toc-title {
+  margin: 0 0 8px;
+  font-family: var(--pz-display);
+  font-weight: 700;
+  font-size: 16px;
+}
+.pz-toc ol {
+  margin: 0;
+  padding-left: 1.4em;
+  font-size: 16px;
+  line-height: 1.5;
+}
+.pz-toc li {
+  padding: 3px 0;
+}
+.pz-toc li::marker {
+  color: var(--pz-muted);
+}
+.pz-toc a {
+  color: var(--pz-link);
+  text-decoration: none;
+}
+.pz-toc a:hover {
+  text-decoration: underline;
+}
+
+/* ---------- Текст ---------- */
+.pz-prose {
+  margin-top: 8px;
+  font-size: 17px;
+  line-height: 1.72;
+  color: var(--pz-ink-2);
+  overflow-wrap: break-word;
+}
+@media (min-width: 720px) {
+  .pz-prose {
+    font-size: 18px;
+  }
+}
+.pz-prose p,
+.pz-prose ul,
+.pz-prose ol {
+  max-width: 68ch;
+  margin: 0 0 1.1em;
+}
+.pz-prose ul,
+.pz-prose ol {
+  padding-left: 1.4em;
+}
+.pz-prose ul {
+  list-style: disc;
+}
+.pz-prose ol {
+  list-style: decimal;
+}
+.pz-prose li {
+  padding-left: 0.2em;
+  margin-bottom: 0.45em;
+}
+.pz-prose li::marker {
+  color: var(--pz-muted);
+}
+.pz-prose strong {
+  font-weight: 600;
+  color: var(--pz-ink);
+}
+.pz-prose a {
+  color: var(--pz-link);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+}
+.pz-prose a:hover {
+  text-decoration-thickness: 2px;
+}
+.pz-prose h2 {
+  margin: 2.2em 0 0.6em;
+  font-size: clamp(23px, 4.2vw, 28px);
+  line-height: 1.2;
+  /* Якорь из оглавления не должен прилипать к верхней кромке окна. */
+  scroll-margin-top: 20px;
+}
+.pz-prose h3 {
+  margin: 1.8em 0 0.5em;
+  font-size: clamp(19px, 3.4vw, 21px);
+  line-height: 1.3;
+}
+
+/* ---------- Таблица: прокручивается внутри контейнера ---------- */
+.pz-table-wrap {
+  margin: 1.4em 0;
+  overflow-x: auto;
+  border: 1px solid var(--pz-line);
+  border-radius: 12px;
+  background: var(--pz-panel);
+  -webkit-overflow-scrolling: touch;
+}
+.pz-table-wrap table {
+  width: 100%;
+  min-width: 520px;
+  border-collapse: collapse;
+  font-size: 15.5px;
+  line-height: 1.5;
+}
+.pz-table-wrap caption {
+  padding: 12px 14px 4px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--pz-ink);
+}
+.pz-table-wrap th,
+.pz-table-wrap td {
+  padding: 10px 14px;
+  text-align: left;
+  vertical-align: top;
+  border-top: 1px solid var(--pz-line);
+}
+.pz-table-wrap thead th {
+  border-top: 0;
+  background: var(--pz-bg-2);
+  color: var(--pz-ink);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.pz-table-wrap caption + thead th {
+  border-top: 1px solid var(--pz-line);
+}
+
+/* ---------- Врезка ---------- */
+.pz-note {
+  margin: 1.5em 0;
+  padding: 16px 18px;
+  border: 1px solid var(--pz-note-line);
+  border-left: 4px solid #f2541b;
+  border-radius: 12px;
+  background: var(--pz-note-bg);
+}
+.pz-note p {
+  margin: 0;
+  max-width: none;
+}
+.pz-note .pz-note-title {
+  margin-bottom: 6px;
+  font-family: var(--pz-display);
+  font-weight: 700;
+  color: var(--pz-ink);
+}
+
+/* ---------- Призыв ---------- */
+.pz-cta {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  margin: 2em 0;
+  padding: 20px;
+  border: 1px solid var(--pz-line);
+  border-radius: 18px;
+  background: var(--pz-panel);
+  box-shadow: 0 1px 2px rgba(26, 24, 22, 0.05), 0 18px 36px -24px rgba(26, 24, 22, 0.35);
+}
+.pz-cta-mark {
+  margin-top: 2px;
+}
+.pz-cta-body {
+  min-width: 0;
+}
+.pz .pz-cta-text {
+  margin: 0 0 16px;
+  max-width: 56ch;
+  font-size: 17px;
+  line-height: 1.55;
+  color: var(--pz-ink);
+}
+.pz-cta-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+@media (max-width: 480px) {
+  .pz-cta {
+    flex-direction: column;
+    padding: 18px 16px;
+  }
+}
+
+.pz .pz-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 46px;
+  padding: 0 22px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-family: var(--pz-display);
+  font-weight: 600;
+  font-size: 16px;
+  text-decoration: none;
+  transition: background-color 0.2s, border-color 0.2s;
+}
+.pz .pz-btn-primary {
+  background: var(--pz-btn);
+  color: #fff;
+}
+.pz .pz-btn-primary:hover {
+  background: var(--pz-btn-hover);
+}
+.pz .pz-btn-ghost {
+  border-color: var(--pz-line);
+  background: transparent;
+  color: var(--pz-ink);
+}
+.pz .pz-btn-ghost:hover {
+  border-color: var(--pz-muted);
+}
+
+/* ---------- Вопросы и источники ---------- */
+.pz-faq-item {
+  padding: 16px 0;
+  border-top: 1px solid var(--pz-line);
+}
+.pz-faq-item:last-child {
+  border-bottom: 1px solid var(--pz-line);
+}
+.pz-prose .pz-faq-item h3 {
+  margin: 0 0 6px;
+  font-size: clamp(18px, 3.2vw, 20px);
+}
+.pz-prose .pz-faq-item p {
+  margin: 0;
+}
+.pz-sources ul {
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+/* ---------- Карточки статей ---------- */
+.pz-related {
+  margin-top: 40px;
+}
+.pz-related h2,
+.pz-cluster h2 {
+  margin: 0 0 14px;
+  font-size: clamp(23px, 4.2vw, 28px);
+  line-height: 1.2;
+}
+.pz-cards {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+@media (min-width: 640px) {
+  .pz-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.pz .pz-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  height: 100%;
+  padding: 16px 18px;
+  border: 1px solid var(--pz-line);
+  border-radius: 14px;
+  background: var(--pz-panel);
+  text-decoration: none;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.pz .pz-card:hover {
+  border-color: #f2541b;
+}
+.pz-card-eyebrow,
+.pz-card-meta {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--pz-muted);
+}
+.pz-card-meta {
+  margin-top: auto;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+}
+.pz-card-title {
+  font-family: var(--pz-display);
+  font-weight: 700;
+  font-size: 18px;
+  line-height: 1.25;
+  letter-spacing: -0.015em;
+  color: var(--pz-ink);
+}
+.pz-card-text {
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--pz-ink-2);
+}
+
+/* ---------- Индекс ---------- */
+.pz-cluster {
+  margin-top: 40px;
+}
+.pz-cluster-text {
+  margin: -6px 0 16px;
+  color: var(--pz-muted);
+  font-size: 16px;
+}
+.pz-empty {
+  margin-top: 32px;
+  color: var(--pz-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pz * {
+    transition: none !important;
+  }
+}

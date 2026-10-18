@@ -1,0 +1,78 @@
+# systemd-юнит воркера TenderFit на сервере в России.
+#
+# Куда ставить:
+#   sudo cp deploy/tenderfit-worker.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now tenderfit-worker
+#
+# Файл окружения /etc/tenderfit/worker.env готовится из deploy/worker.env.example
+# и содержит ключи, поэтому права на него — 640 root:tenderfit. В дереве проекта
+# ключей быть не должно: код воркера копируется на сервер без .env.local.
+#
+# Порядок путей и пользователя меняют под себя: WorkingDirectory, User, Group и
+# ExecStart обязаны совпадать с тем, куда распакован код.
+
+[Unit]
+Description=TenderFit — прогон источников и очередь заданий (российский адрес)
+Documentation=https://zakupki.gov.ru
+# Сеть нужна до первого тика: без неё воркер определит выход как недоступный
+# и запишет в пульс пустой адрес, а панель покажет «не определён».
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tenderfit
+Group=tenderfit
+WorkingDirectory=/opt/tenderfit-ai
+EnvironmentFile=/etc/tenderfit/worker.env
+# NODE_ENV=production держит зависимости в рабочем режиме и отключает
+# предупреждения разработчика в логах.
+Environment=NODE_ENV=production
+# tsx лежит в devDependencies, поэтому на сервере ставится полный npm ci,
+# а запуск идёт через локальный бинарник проекта — не через npx, который
+# стал бы искать пакет в сети при каждой перезагрузке.
+ExecStart=/opt/tenderfit-ai/node_modules/.bin/tsx scripts/worker.ts
+
+# Воркер ловит SIGTERM, перестаёт брать новое и ждёт, пока идущий прогон
+# закончится сам (до WORKER_STOP_GRACE_MS, по умолчанию 9,5 минуты), затем
+# выходит. Полное скачивание документации и «Найти новые закупки» идут
+# минуты, поэтому TimeoutStopSec с запасом над этим сроком.
+#
+# KillMode=mixed обязателен для такого ожидания: по умолчанию (control-group)
+# systemd шлёт SIGTERM всем процессам службы сразу, и дочерний прогон умирал с
+# кодом 143 раньше, чем воркер успевал что-то решить (12.10.2026). При mixed
+# SIGTERM получает только воркер, а оставшимся процессам через TimeoutStopSec
+# приходит SIGKILL. Остановить немедленно: systemctl kill -s SIGKILL
+# tenderfit-worker; задание вернётся в очередь очисткой потерянных на старте.
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=630
+
+Restart=always
+RestartSec=30
+
+# Журнал в journald: journalctl -u tenderfit-worker -f. Отдельный файл не
+# заводим — два журнала расходились бы при разборе сбоя.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tenderfit-worker
+
+# Ограничения ниже не косметика: воркер работает без присмотра и ходит в сеть
+# по адресам из чужих ответов, поэтому ему нечего делать вне своей папки.
+# ReadWritePaths нужен для logs/worker.lock — замка против второго воркера — и для data/:
+# расчёт для зоны, которой нет на диске, собирает её по требованию (сырьё, индекс зоны и замок
+# сборки data/fsnb/zones-build.lock). Без data/ в списке такой расчёт упадёт на записи.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/tenderfit-ai/logs /opt/tenderfit-ai/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

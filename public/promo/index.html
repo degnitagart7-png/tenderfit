@@ -1,0 +1,442 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ТендерФит</title>
+<meta name="description" content="ТендерФит показывает, какие закупки подходят вашей компании и почему: оценка с цитатами из документов, риски договора, смета и цена участия.">
+<link rel="icon" href="https://tender-fit.ru/icon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@500;600;700;800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600&display=swap">
+<style>
+/* Разметка: настоящие экраны продукта и по одной мысли на раздел; крупный текст, много воздуха, стеклянная плавающая шапка. Цвета и шрифты те же, что в приложении. */
+:root{
+  --paper:#F5F3EF; --paper-2:#ECE9E3; --panel:#FFFFFF; --ink:#1F1C19; --ink-2:#48433D; --muted:#6F6A63; --faint:#9A948D; --line:#DDD8D1;
+  --accent:#F2541B; --accent-ink:#C9420F;
+  --glass:rgba(255,255,255,.6); --glass-line:rgba(255,255,255,.78); --glass-shadow:rgba(26,24,22,.2);
+  --display:'Onest','Inter',system-ui,sans-serif; --ui:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif; --mono:'JetBrains Mono',ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+  --w:1180px;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --paper:#161411; --paper-2:#1E1B17; --panel:#221F1A; --ink:#F3F1EC; --ink-2:#D6D1C9; --muted:#A8A29A; --faint:#7A746C; --line:#36312B;
+  --accent:#F56A38; --accent-ink:#FF8E62;
+  --glass:rgba(34,31,26,.62); --glass-line:rgba(255,255,255,.14); --glass-shadow:rgba(0,0,0,.5); color-scheme:dark}}
+:root[data-theme="dark"]{
+  --paper:#161411; --paper-2:#1E1B17; --panel:#221F1A; --ink:#F3F1EC; --ink-2:#D6D1C9; --muted:#A8A29A; --faint:#7A746C; --line:#36312B;
+  --accent:#F56A38; --accent-ink:#FF8E62;
+  --glass:rgba(34,31,26,.62); --glass-line:rgba(255,255,255,.14); --glass-shadow:rgba(0,0,0,.5); color-scheme:dark}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--ui);font-size:18px;line-height:1.65;-webkit-font-smoothing:antialiased}
+a{color:inherit}
+h1,h2,h3{margin:0;font-family:var(--display);letter-spacing:-.025em;text-wrap:balance;line-height:1.1;font-weight:700}
+p{margin:0}
+img{max-width:100%;display:block}
+.wrap{max-width:var(--w);margin:0 auto;padding-inline:24px}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.lead{color:var(--ink-2)}
+
+/* Стекло: размытие и насыщение фона, светлая кромка; в Chromium слой ::before добавляет преломление по краю через SVG-фильтр, другие браузеры его пропускают. */
+.glass{position:relative;background:var(--glass);-webkit-backdrop-filter:blur(18px) saturate(1.6);backdrop-filter:blur(18px) saturate(1.6);border:1px solid var(--glass-line);box-shadow:inset 0 1px 0 rgba(255,255,255,.55),0 12px 30px -14px var(--glass-shadow)}
+.glass::before{content:"";position:absolute;inset:-1px;border-radius:inherit;pointer-events:none;-webkit-backdrop-filter:url(#lg-refract);backdrop-filter:url(#lg-refract);-webkit-mask:linear-gradient(#000,#000) content-box,linear-gradient(#000,#000);-webkit-mask-composite:xor;mask:linear-gradient(#000,#000) content-box,linear-gradient(#000,#000);mask-composite:exclude;padding:10px;opacity:.9}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;min-height:52px;padding:0 26px;border-radius:999px;font-family:var(--display);font-weight:600;font-size:17px;letter-spacing:-.01em;text-decoration:none;cursor:pointer;border:1px solid transparent;transition:transform .18s,background-color .2s,border-color .2s;white-space:nowrap}
+.btn:active{transform:scale(.985)}
+.btn-primary{background:var(--accent);color:#fff;box-shadow:inset 0 1px 0 rgba(255,255,255,.35),0 10px 24px -10px rgba(242,84,27,.6)}
+.btn-primary:hover{background:var(--accent-ink)}
+.btn-glass{color:var(--ink)}
+.btn-glass:hover{border-color:rgba(26,24,22,.25)}
+.btn svg{width:18px;height:18px}
+.btn:focus-visible,a:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outline-offset:3px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+/* Плавающая шапка */
+.top{position:sticky;top:calc(env(safe-area-inset-top,0px) + 12px);z-index:40;padding-inline:14px;margin-top:12px;pointer-events:none}
+.top .bar{pointer-events:auto;max-width:var(--w);margin:0 auto;border-radius:999px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 10px 8px 16px}
+.brand{display:flex;align-items:center;gap:10px;font-family:var(--display);font-weight:700;font-size:17px;text-decoration:none;letter-spacing:-.01em}
+.brand svg{width:30px;height:30px}
+.nav{display:flex;gap:4px}
+.nav a{text-decoration:none;font-size:15px;color:var(--ink-2);padding:8px 12px;border-radius:999px}
+.nav a:hover{background:rgba(26,24,22,.06);color:var(--ink)}
+.top .auth{display:flex;gap:6px}
+.top .btn{min-height:40px;padding:0 16px;font-size:15px}
+.top .btn-glass{border-color:rgba(26,24,22,.12);background:rgba(255,255,255,.35)}
+@media (max-width:860px){.nav{display:none}}
+@media (max-width:420px){.top .auth .btn-glass{display:none}}
+
+/* Герой */
+.hero{padding-block:64px 0;overflow:hidden}
+.hero h1{font-size:clamp(40px,5.6vw,68px);font-weight:800;letter-spacing:-.035em;max-width:13em}
+.hero h1 em{font-style:normal;color:var(--accent)}
+.hero .lead{margin-top:24px;font-size:21px;max-width:27em;line-height:1.5}
+.hero .cta{display:flex;flex-wrap:wrap;gap:12px;margin-top:32px}
+.hero .fine{margin-top:16px;font-size:15px;color:var(--faint)}
+.shot-hero{margin-top:48px}
+@media (max-width:900px){.hero{padding-top:40px}}
+@media (prefers-reduced-motion:no-preference){
+  .rise{animation:rise .7s cubic-bezier(.2,.7,.2,1) both}
+  .rise-2{animation:rise .8s .12s cubic-bezier(.2,.7,.2,1) both}
+  @keyframes rise{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+}
+
+/* Экран продукта в рамке окна */
+.frame{position:relative;border-radius:14px;overflow:hidden;background:var(--panel);border:1px solid var(--line);box-shadow:0 1px 2px rgba(26,24,22,.06),0 30px 60px -30px rgba(26,24,22,.35)}
+.frame .chrome{display:flex;align-items:center;gap:6px;height:30px;padding:0 12px;background:var(--paper-2);border-bottom:1px solid var(--line)}
+.frame .chrome i{width:9px;height:9px;border-radius:50%;background:var(--line)}
+.frame .chrome span{margin-left:10px;font-size:11.5px;color:var(--faint);font-family:var(--mono)}
+.frame .view{position:relative;overflow:hidden}
+.frame .view img{width:100%;height:100%;object-fit:cover;object-position:top left}
+
+/* Полоса источников */
+.sources{margin-top:40px;border-block:1px solid var(--line);background:var(--panel)}
+.sources .wrap{display:flex;flex-wrap:wrap;align-items:center;gap:8px 28px;min-height:64px;font-size:15px;color:var(--muted)}
+.sources b{font-weight:600;color:var(--ink)}
+
+/* Разделы: экран и одна мысль */
+.sec{padding-block:96px}
+.sec h2{font-size:clamp(30px,3.8vw,44px)}
+.sec .sub{margin-top:16px;font-size:19px;color:var(--ink-2);max-width:30em;line-height:1.55}
+.feature{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:48px;align-items:center}
+.feature.flip{grid-template-columns:minmax(0,7fr) minmax(0,5fr)}
+.feature.flip .text{order:2}
+.feature + .feature{margin-top:112px}
+.feature .text h2{font-size:clamp(28px,3.2vw,38px)}
+.points{margin:22px 0 0;padding:0;list-style:none;display:grid;gap:10px}
+.points li{position:relative;padding-left:20px;font-size:17px;color:var(--ink-2)}
+.points li::before{content:"";position:absolute;left:0;top:.6em;width:8px;height:8px;border-radius:50%;background:var(--accent)}
+@media (max-width:900px){.feature,.feature.flip{grid-template-columns:1fr}.feature.flip .text{order:0}.feature + .feature{margin-top:72px}.sec{padding-block:64px}}
+
+/* Выгода: три короткие строки */
+.gain{background:var(--paper-2);border-block:1px solid var(--line)}
+.gain .list{margin:40px 0 0;padding:0;list-style:none;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:32px}
+.gain li{border-top:2px solid var(--line);padding-top:18px}
+.gain .was{display:block;font-size:16px;color:var(--muted);text-decoration:line-through;text-decoration-color:rgba(184,50,30,.5);text-decoration-thickness:1.5px}
+.gain .now{display:block;margin-top:8px;font-family:var(--display);font-weight:700;font-size:24px;letter-spacing:-.02em;line-height:1.2}
+@media (max-width:760px){.gain .list{grid-template-columns:1fr;gap:22px}}
+
+/* Тарифы */
+.plans{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:40px;margin-top:40px}
+@media (max-width:860px){.plans{grid-template-columns:1fr;gap:28px}}
+.plan{border-top:2px solid var(--line);padding-top:20px;display:flex;flex-direction:column;gap:14px;min-width:0}
+.plan.hi{border-top-color:var(--accent)}
+.plan h3{font-size:23px}
+.plan .price{font-family:var(--mono);font-weight:600;font-size:36px;letter-spacing:-.03em;line-height:1}
+.plan .price small{font-family:var(--ui);font-size:14.5px;font-weight:500;color:var(--muted);letter-spacing:0}
+.plan .tl{font-size:16.5px;color:var(--ink-2)}
+.plan .btn{margin-top:auto;align-self:flex-start}
+
+/* Вопросы */
+.faq{max-width:46em;margin-top:36px}
+.faq details{border-top:1px solid var(--line)}
+.faq details:last-child{border-bottom:1px solid var(--line)}
+.faq summary{cursor:pointer;list-style:none;display:flex;justify-content:space-between;gap:16px;align-items:center;padding:22px 4px;font-family:var(--display);font-weight:600;font-size:20px;letter-spacing:-.01em}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary::after{content:"+";font-family:var(--mono);font-size:22px;color:var(--faint);flex:none;transition:transform .2s}
+.faq details[open] summary::after{transform:rotate(45deg)}
+.faq .a{padding:0 4px 24px;color:var(--ink-2);font-size:17.5px;max-width:38em}
+
+/* Полезное: ссылки на статьи раздела /poleznoe */
+.useful .grid{margin:32px 0 0;padding:0;list-style:none;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.useful .grid a{display:block;height:100%;padding:18px 20px;border:1px solid var(--line);border-radius:14px;background:var(--panel);text-decoration:none;font-family:var(--display);font-weight:600;font-size:18px;line-height:1.3;letter-spacing:-.01em;transition:border-color .2s}
+.useful .grid a:hover{border-color:var(--accent)}
+.useful .all{margin-top:20px;font-size:16px}
+.useful .all a{color:var(--accent-ink)}
+@media (max-width:860px){.useful .grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:560px){.useful .grid{grid-template-columns:1fr}}
+
+/* Финал и подвал */
+.final{background:var(--ink);color:#F6F6F4;padding-block:104px;position:relative;overflow:hidden}
+.final .wrap{position:relative;display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr);gap:40px;align-items:center}
+.final h2{font-size:clamp(32px,4.4vw,54px);font-weight:800;letter-spacing:-.035em}
+.final p{margin-top:16px;color:rgba(246,246,244,.7);font-size:19px;max-width:26em}
+.final .cta{display:flex;flex-wrap:wrap;gap:12px;margin-top:32px}
+.final .btn-glass{color:#F6F6F4;background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.18);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px)}
+.final .btn-glass:hover{border-color:rgba(255,255,255,.5)}
+.final .mark{justify-self:end;width:min(240px,60%)}
+.final .halo{position:absolute;right:-120px;top:-160px;width:560px;height:560px;border-radius:50%;background:radial-gradient(closest-side,rgba(242,84,27,.35),transparent 70%);pointer-events:none}
+@media (max-width:860px){.final .wrap{grid-template-columns:1fr}.final .mark{display:none}}
+.foot{background:var(--ink);color:rgba(246,246,244,.5);font-size:13.5px;padding-block:26px;border-top:1px solid rgba(255,255,255,.08)}
+.foot .wrap{display:flex;flex-wrap:wrap;justify-content:space-between;gap:12px 24px}
+.foot a{color:rgba(246,246,244,.72);text-decoration:none}
+.foot a:hover{color:#fff}
+.foot .links{display:flex;flex-wrap:wrap;gap:8px 18px}
+</style>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <filter id="lg-refract" x="-10%" y="-10%" width="120%" height="120%" color-interpolation-filters="sRGB">
+    <feTurbulence type="fractalNoise" baseFrequency="0.012 0.03" numOctaves="2" seed="7" result="n"/>
+    <feGaussianBlur in="n" stdDeviation="2" result="nb"/>
+    <feDisplacementMap in="SourceGraphic" in2="nb" scale="28" xChannelSelector="R" yChannelSelector="G"/>
+  </filter>
+</svg>
+
+<header class="top">
+  <div class="bar glass">
+    <a class="brand" href="#top" aria-label="ТендерФит, в начало">
+      <svg viewBox="6 6 88 88" aria-hidden="true"><rect x="6" y="6" width="88" height="88" rx="22" fill="#F2541B"/><path d="M26 29 H72 M49 29 V60 L60 71 L79 45" fill="none" stroke="#fff" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      ТендерФит
+    </a>
+    <nav class="nav" aria-label="Разделы">
+      <a href="https://tender-fit.ru/demo">Демо</a>
+      <a href="#feed">Лента</a>
+      <a href="#verdict">Вердикт</a>
+      <a href="#estimate">Смета</a>
+      <a href="#plans">Тарифы</a>
+      <a href="#faq">Вопросы</a>
+      <a href="https://tender-fit.ru/poleznoe">Полезное</a>
+    </nav>
+    <div class="auth">
+      <a class="btn btn-glass" href="https://tender-fit.ru/login">Войти</a>
+      <a class="btn btn-primary" href="https://tender-fit.ru/login?mode=register">Регистрация</a>
+    </div>
+  </div>
+</header>
+
+<main id="top">
+<section class="hero">
+  <div class="wrap rise">
+    <h1>Какие закупки <em>ваши</em> — и почему</h1>
+    <p class="lead">Сервис читает документацию закупки и говорит, подходит ли она вашей компании. С цитатами, рисками договора и сметой.</p>
+    <div class="cta">
+      <a class="btn btn-primary" href="https://tender-fit.ru/login?mode=register">Попробовать 7 дней бесплатно
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
+      <a class="btn btn-glass glass" href="https://tender-fit.ru/demo">Посмотреть демо</a>
+    </div>
+    <p class="fine">Без карты. Вход по почте.</p>
+  </div>
+  <div class="wrap shot-hero rise-2">
+    <div class="frame">
+      <div class="chrome" aria-hidden="true"><i></i><i></i><i></i><span>tender-fit.ru/tenders</span></div>
+      <div class="view" style="aspect-ratio:2000/1250">
+        <img src="img/feed.jpg" alt="Лента закупок ТендерФит: найдено 146 закупок, у каждой строки оценка «Подходит 97»" width="2000" height="1250" fetchpriority="high">
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="sources" aria-label="Источники закупок">
+  <div class="wrap">
+    <span><b>ЕИС</b> · 44‑ФЗ и 223‑ФЗ</span>
+    <span><b>ТЭК‑Торг</b></span>
+    <span><b>Сбербанк‑АСТ</b></span>
+    <span><b>Росэлторг</b></span>
+    <span><b>Фабрикант</b></span>
+    <span>Обновление каждые 2 часа</span>
+  </div>
+</div>
+
+<section class="sec" id="feed">
+  <div class="wrap">
+    <div class="feature">
+      <div class="text">
+        <h2>Лента уже под вашу компанию</h2>
+        <p class="sub">Регион, виды работ и цена из профиля отбирают закупки сами. Что скрыто и почему — видно одной строкой.</p>
+        <ul class="points">
+          <li>Все площадки в одной ленте</li>
+          <li>Оценка у каждой строки</li>
+          <li>Обновление каждые два часа</li>
+        </ul>
+      </div>
+      <div class="frame">
+        <div class="chrome" aria-hidden="true"><i></i><i></i><i></i><span>tender-fit.ru/tenders</span></div>
+        <div class="view" style="aspect-ratio:1500/1000">
+          <img src="img/feed.jpg" alt="Строки ленты закупок с оценкой «Подходит 97»" loading="lazy" style="object-position:26% 0">
+        </div>
+      </div>
+    </div>
+
+    <div class="feature flip" id="verdict">
+      <div class="text">
+        <h2>Глубокий анализ документации</h2>
+        <p class="sub">Сервис читает все файлы закупки. Каждый вывод — с цитатой и пунктом документа и с тем, что делать.</p>
+        <ul class="points">
+          <li>Требования со статусом: выполнено, проверить, стоп</li>
+          <li>Стоп‑факторы до подачи заявки</li>
+        </ul>
+      </div>
+      <div class="frame">
+        <div class="chrome" aria-hidden="true"><i></i><i></i><i></i><span>Анализ документов · Выводы</span></div>
+        <div class="view" style="aspect-ratio:1500/1100">
+          <img src="img/findings.jpg" alt="Выводы глубокого анализа: 5 из 12 требований закрыты профилем, 36 рисков договора, каждый вывод с цитатой из документа" loading="lazy" style="object-position:38% 100%">
+        </div>
+      </div>
+    </div>
+
+    <div class="feature">
+      <div class="text">
+        <h2>Риски договора с пунктом и уровнем</h2>
+        <p class="sub">Односторонний отказ, штрафы, аванс, лимит финансирования. Юрист смотрит только спорное.</p>
+      </div>
+      <div class="frame">
+        <div class="chrome" aria-hidden="true"><i></i><i></i><i></i><span>Риски договора</span></div>
+        <div class="view" style="aspect-ratio:1500/900">
+          <img src="img/risks.jpg" alt="Вкладка «Риски договора»: «Право заказчика на односторонний отказ», уровень «Высокий»" loading="lazy" style="object-position:40% 100%">
+        </div>
+      </div>
+    </div>
+
+    <div class="feature flip" id="report">
+      <div class="text">
+        <h2>Отчёт в Word для руководителя</h2>
+        <p class="sub">Итог, что сделать до подачи, требования со статусом, риски и деньги, которые заморозятся. Один файл вместо пересказа.</p>
+        <p style="margin-top:22px"><a class="btn btn-glass glass" href="https://tender-fit.ru/promo/report-example.docx">Скачать пример отчёта
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg></a></p>
+      </div>
+      <div class="frame">
+        <div class="chrome" aria-hidden="true"><i></i><i></i><i></i><span>Глубокий анализ 0134600008526000372.docx</span></div>
+        <div class="view" style="aspect-ratio:1500/1100">
+          <img src="img/report.jpg" alt="Первая страница отчёта в Word: итог «Нет: не хватает специалистов нужной квалификации», главное до подачи, таблица требований со статусами" loading="lazy" style="object-position:0 0">
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="sec" id="estimate" style="padding-top:0">
+  <div class="wrap">
+    <div class="feature flip">
+      <div class="text">
+        <h2>Смета по форме 421/пр</h2>
+        <p class="sub">Из ведомости объёмов или ТЗ. Нормы ФСНБ‑2022, цены ФГИС ЦС по вашей зоне, Excel как в ГРАНД‑Смете.</p>
+      </div>
+      <div class="frame">
+        <div class="chrome" aria-hidden="true"><i></i><i></i><i></i><span>Смета по форме 421/пр</span></div>
+        <div class="view" style="aspect-ratio:1500/930">
+          <img src="img/lsr.jpg" alt="Локальный сметный расчёт: позиция с элементами ОТ, ЭМ, НР, СП и итогом" loading="lazy" style="object-position:0 32%">
+        </div>
+      </div>
+    </div>
+
+    <div class="feature">
+      <div class="text">
+        <h2>До какого снижения можно идти</h2>
+        <p class="sub">Смета против НМЦК, безубыточная цена и запас прочности.</p>
+      </div>
+      <div class="frame">
+        <div class="chrome" aria-hidden="true"><i></i><i></i><i></i><span>Анализ документов</span></div>
+        <div class="view" style="aspect-ratio:1500/1000">
+          <img src="img/price.jpg" alt="Итоги анализа: 5 из 12 требований закрыты профилем, 36 рисков договора, стоимость СМР 1 515 260,6 ₽" loading="lazy" style="object-position:0 100%">
+        </div>
+      </div>
+    </div>
+
+    <div class="feature flip">
+      <div class="text">
+        <h2>Смета без закупки</h2>
+        <p class="sub">Загрузите свои файлы: ведомость, ТЗ или смету заказчика.</p>
+      </div>
+      <div class="frame">
+        <div class="chrome" aria-hidden="true"><i></i><i></i><i></i><span>tender-fit.ru/estimate</span></div>
+        <div class="view" style="aspect-ratio:1500/880">
+          <img src="img/estimate.jpg" alt="Раздел «Смета»: объект, документы, регион" loading="lazy" style="object-position:40% 18%">
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="sec gain" id="value">
+  <div class="wrap">
+    <h2>Что меняется</h2>
+    <ul class="list">
+      <li><span class="was">Неделя на документацию</span><span class="now">Минуты на вердикт</span></li>
+      <li><span class="was">Три дня ждать сметчика</span><span class="now">Смета в карточке закупки</span></li>
+      <li><span class="was">Юрист читает весь контракт</span><span class="now">Только спорные пункты</span></li>
+    </ul>
+  </div>
+</section>
+
+<section class="sec" id="plans">
+  <div class="wrap">
+    <h2>Семь дней бесплатно, дальше по пакету</h2>
+    <div class="plans">
+      <div class="plan">
+        <h3>Старт</h3>
+        <div class="price">9 000 <small>₽ в месяц</small></div>
+        <p class="tl">Поиск закупок, анализ документации, отчёт в Word.</p>
+        <a class="btn btn-glass glass" href="https://tender-fit.ru/login?mode=register">Начать бесплатно</a>
+      </div>
+      <div class="plan hi">
+        <h3>Расчёт</h3>
+        <div class="price">39 000 <small>₽ в месяц</small></div>
+        <p class="tl">Всё из «Старта», смета по закупке и проверка сметы заказчика.</p>
+        <a class="btn btn-primary" href="https://tender-fit.ru/login?mode=register">Попробовать 7 дней</a>
+      </div>
+      <div class="plan">
+        <h3>Премиум</h3>
+        <div class="price">по запросу</div>
+        <p class="tl">Всё из «Расчёта» и юридическое сопровождение в УФАС.</p>
+        <a class="btn btn-glass glass" href="https://tender-fit.ru/login?mode=register">Обсудить</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="sec" id="faq" style="padding-top:0">
+  <div class="wrap">
+    <h2>Вопросы</h2>
+    <div class="faq">
+      <details open>
+        <summary>Откуда берутся закупки?</summary>
+        <div class="a">ЕИС по 44‑ФЗ и 223‑ФЗ, ТЭК‑Торг, Сбербанк‑АСТ, Росэлторг и Фабрикант. Лента обновляется каждые два часа.</div>
+      </details>
+      <details>
+        <summary>Можно ли доверять вердикту?</summary>
+        <div class="a">У каждого вывода есть цитата из документа с указанием пункта. Решение остаётся за вами.</div>
+      </details>
+      <details>
+        <summary>Как считается смета?</summary>
+        <div class="a">Работы берутся из ведомости или ТЗ, нормы — ФСНБ‑2022, цены — ФГИС ЦС по зоне объекта. Результат в форме 421/пр, выгрузка в Excel.</div>
+      </details>
+      <details>
+        <summary>Сколько стоит?</summary>
+        <div class="a">Семь дней бесплатно без карты. Дальше 9 000 ₽ или 39 000 ₽ в месяц, «Премиум» по запросу.</div>
+      </details>
+      <details>
+        <summary>Нужна ли электронная подпись?</summary>
+        <div class="a">Нет. Заявку вы подаёте на площадке как обычно.</div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<section class="sec useful" id="useful" style="padding-top:0">
+  <div class="wrap">
+    <h2>Полезное для подрядчика</h2>
+    <p class="sub">Короткие разборы по 44‑ФЗ и 223‑ФЗ: сроки, смета, СРО, цена и жалобы.</p>
+    <ul class="grid">
+      <li><a href="https://tender-fit.ru/poleznoe/srok-oplaty-po-44-fz">Срок оплаты по 44‑ФЗ: когда ждать деньги</a></li>
+      <li><a href="https://tender-fit.ru/poleznoe/kak-proverit-smetu-zakazchika">Как проверить смету заказчика</a></li>
+      <li><a href="https://tender-fit.ru/poleznoe/sro-dlya-goszakupok">Нужно ли СРО для госзакупок</a></li>
+      <li><a href="https://tender-fit.ru/poleznoe/minimalnaya-cena-uchastiya">До какой цены можно снижаться</a></li>
+      <li><a href="https://tender-fit.ru/poleznoe/zhaloba-v-fas-na-dokumentaciyu">Жалоба в ФАС на документацию</a></li>
+      <li><a href="https://tender-fit.ru/poleznoe/tendery-na-stroitelstvo-i-remont">Тендеры на строительство и ремонт</a></li>
+    </ul>
+    <p class="all"><a href="https://tender-fit.ru/poleznoe">Все статьи раздела</a></p>
+  </div>
+</section>
+</main>
+
+<section class="final">
+  <div class="halo" aria-hidden="true"></div>
+  <div class="wrap">
+    <div>
+      <h2>Попробуйте на своей закупке</h2>
+      <p>Заполните профиль, откройте закупку, запустите анализ. Через несколько минут будет ясно, стоит ли тратить на неё неделю.</p>
+      <div class="cta">
+        <a class="btn btn-primary" href="https://tender-fit.ru/login?mode=register">Попробовать 7 дней бесплатно
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
+        <a class="btn btn-glass" href="https://tender-fit.ru/demo">Сначала демо</a>
+      </div>
+    </div>
+    <svg class="mark" viewBox="6 6 88 88" aria-hidden="true"><rect x="6" y="6" width="88" height="88" rx="22" fill="#F2541B"/><path d="M26 29 H72 M49 29 V60 L60 71 L79 45" fill="none" stroke="#fff" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </div>
+</section>
+<footer class="foot">
+  <div class="wrap">
+    <div>ИП Цыретаров Сультим Анатольевич · ИНН 032631178302 · ОГРНИП 324030000042702</div>
+    <div class="links">
+      <a href="https://tender-fit.ru/poleznoe">Полезное</a>
+      <a href="https://tender-fit.ru/legal/privacy">Политика конфиденциальности</a>
+      <a href="https://tender-fit.ru/legal/offer">Публичная оферта</a>
+      <a href="https://tender-fit.ru/legal/consent">Согласие на обработку данных</a>
+    </div>
+  </div>
+</footer>

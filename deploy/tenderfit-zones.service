@@ -1,0 +1,71 @@
+# systemd-юнит обновления ценовых зон ФГИС ЦС (запускается таймером tenderfit-zones.timer).
+#
+# Куда ставить:
+#   sudo cp deploy/tenderfit-zones.service deploy/tenderfit-zones.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now tenderfit-zones.timer
+#
+# Что делает. `build-all-zones.ts` берёт справочник зон и последний период каждой, собирает
+# недостающие и устаревшие зоны (период в zone.json не равен последнему) — по одной, с паузой
+# между запросами — и пишет итог в журнал. Новый период опубликован — пересоберёт; нового
+# нет — за минуты проверит периоды и ничего не скачает. Каждая зона собирается во временный
+# каталог и подменяет `data/fsnb/index/zones/<id>` переименованием, под замком
+# `data/fsnb/zones-build.lock`: сборка по требованию из воркера и ночное обновление не пересекаются.
+#
+# Работает от того же пользователя и из той же папки, что воркер и приложение: WorkingDirectory,
+# User и Group обязаны совпадать с тем, куда распакован код. Каталог data/ должен принадлежать
+# этому пользователю (sudo chown -R tenderfit:tenderfit /opt/tenderfit-ai/data): зоны, собранные
+# раньше от root, служба не сможет заменить.
+#
+# Журнал: journalctl -u tenderfit-zones -n 200 --no-pager. Ручной запуск вне расписания:
+#   sudo systemctl start tenderfit-zones.service
+# Проба без загрузки (что будет собрано):
+#   sudo -u tenderfit /opt/tenderfit-ai/node_modules/.bin/tsx scripts/fsnb/build-all-zones.ts --dry-run
+
+[Unit]
+Description=TenderFit — обновление ценовых зон ФГИС ЦС
+Documentation=https://fgiscs.minstroyrf.ru
+# ФГИС ЦС отвечает только российским адресам, а сеть нужна до первого запроса.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=tenderfit
+Group=tenderfit
+WorkingDirectory=/opt/tenderfit-ai
+# Корень Минцифры для TLS: тот же файл, что кладёт deploy-worker.sh. Нет файла — Node предупредит и пойдёт дальше.
+Environment=NODE_ENV=production
+Environment=NODE_EXTRA_CA_CERTS=/etc/tenderfit/russian_trusted_root_ca.pem
+# Метод БИМ (базисно-индексный): ФЕР-2020 и квартальные индексы Минстроя обновляются тем же ночным запуском.
+# Оба шага стоят ДО зон и с «-» в начале: сбой любого (нет сети, нет pdftotext) не отменяет обновление зон, а
+# сам шаг при отсутствии нового — секунды: `build-fer2020.ts --if-missing` собирает ФЕР-2020 один раз (архив
+# 13 МБ, ~3 с, пик ~0,4 ГБ), `fetch-bim-indices.ts` обходит дерево писем ФГИС ЦС и скачивает файлы, только если
+# появилось новое письмо квартала. Нужен pdftotext (`sudo apt install poppler-utils`).
+ExecStartPre=-/opt/tenderfit-ai/node_modules/.bin/tsx scripts/fsnb/build-fer2020.ts --if-missing
+ExecStartPre=-/opt/tenderfit-ai/node_modules/.bin/tsx scripts/fsnb/fetch-bim-indices.ts
+# 7 часов — окно ночи (`--max-minutes 420`): зона, не начатая к утру, остаётся на следующую ночь.
+# Новый квартал даёт до 157 зон по 2–4 минуты с паузой между запросами; остальные ночи — минуты.
+ExecStart=/opt/tenderfit-ai/node_modules/.bin/tsx scripts/fsnb/build-all-zones.ts --max-minutes 420 --pause 2000
+TimeoutStartSec=9h
+# Служба не должна мешать приложению и воркеру на общей машине: ниже приоритет процессора и диска,
+# потолок памяти (сборка зоны — 300–400 МБ; потолок подберите по пиковому RSS из журнала).
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=2G
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tenderfit-zones
+
+# Писать можно только в data/: сырьё, индекс зон и замок. Остальное дерево — только чтение.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/tenderfit-ai/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true

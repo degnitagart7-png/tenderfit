@@ -1,0 +1,42 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "tenderfit-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
+      "port": 3000,
+      "autoPort": true
+    },
+    {
+      "name": "tenderfit-dev-proddata",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "set -a; eval \"$(ssh -o BatchMode=yes -i ~/.ssh/id_ed25519 root@5.35.86.186 'grep -E \"^(SUPABASE_URL|SUPABASE_SERVICE_ROLE_KEY|NEXT_PUBLIC_DATA_SOURCE)=\" /etc/tenderfit/app.env')\"; set +a; exec npm run dev -- -p 3100"
+      ],
+      "port": 3100
+    },
+    {
+      "name": "tenderfit-dev-proddata-noauth",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "set -a; eval \"$(ssh -o BatchMode=yes -i ~/.ssh/id_ed25519 root@5.35.86.186 'grep -E \"^(SUPABASE_URL|SUPABASE_SERVICE_ROLE_KEY|NEXT_PUBLIC_DATA_SOURCE)=\" /etc/tenderfit/app.env')\"; set +a; AUTH_DISABLED=1 exec npm run dev -- -p 3300"
+      ],
+      "port": 3300
+    },
+    {
+      "name": "tenderfit-capture",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "set -a; eval \"$(ssh -o BatchMode=yes -i ~/.ssh/id_ed25519 root@5.35.86.186 'grep -E \"^(SUPABASE_URL|SUPABASE_SERVICE_ROLE_KEY|NEXT_PUBLIC_DATA_SOURCE)=\" /etc/tenderfit/app.env')\"; set +a; AUTH_DISABLED=1 exec npm run dev -- -p 3101"
+      ],
+      "port": 3101
+    }
+  ]
+}
