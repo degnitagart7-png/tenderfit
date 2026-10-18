@@ -1,0 +1,51 @@
+# /etc/systemd/system/tenderfit-backup.service
+# Ежедневная резервная копия базы Supabase (запускается таймером tenderfit-backup.timer).
+#
+# Куда ставить:
+#   sudo mkdir -p /var/backups/tenderfit && sudo chown tenderfit:tenderfit /var/backups/tenderfit
+#   sudo cp deploy/tenderfit-backup.service deploy/tenderfit-backup.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now tenderfit-backup.timer
+#
+# Что делает. scripts/backup-db.ts выгружает данные каждой таблицы через API Supabase (ключ
+# service role из worker.env) в /var/backups/tenderfit/<дата>/<таблица>.ndjson.gz и пишет
+# manifest.json с числом строк; хранит 14 последних копий. Схема базы — в supabase/migrations.
+# Проверка копии без записи в базу:
+#   sudo -u tenderfit /opt/tenderfit-ai/node_modules/.bin/tsx scripts/restore-db.ts --dir /var/backups/tenderfit/<дата>
+#
+# Журнал: journalctl -u tenderfit-backup -n 100 --no-pager. Ручной запуск:
+#   sudo systemctl start tenderfit-backup.service
+
+[Unit]
+Description=TenderFit — резервная копия базы (раз в сутки)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=tenderfit
+Group=tenderfit
+WorkingDirectory=/opt/tenderfit-ai
+EnvironmentFile=/etc/tenderfit/worker.env
+Environment=NODE_ENV=production
+Environment=NODE_EXTRA_CA_CERTS=/etc/tenderfit/russian_trusted_root_ca.pem
+ExecStart=/opt/tenderfit-ai/node_modules/.bin/tsx scripts/backup-db.ts --dir /var/backups/tenderfit
+TimeoutStartSec=1h
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=1G
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tenderfit-backup
+
+# Писать можно только в папку копий; остальное — только чтение.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/backups/tenderfit
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true

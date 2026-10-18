@@ -1,0 +1,12 @@
+[Unit]
+Description=TenderFit — ежедневная резервная копия базы
+
+[Timer]
+# 03:30 по Москве (00:30 UTC): до ночного обновления зон в 02:30 UTC и до утренних сводок.
+OnCalendar=*-*-* 00:30:00
+RandomizedDelaySec=10min
+Persistent=true
+Unit=tenderfit-backup.service
+
+[Install]
+WantedBy=timers.target
