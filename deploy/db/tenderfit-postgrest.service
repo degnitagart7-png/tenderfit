@@ -1,0 +1,25 @@
+# /etc/systemd/system/tenderfit-postgrest.service — API таблиц для приложения и воркера (вместо Supabase).
+#   sudo cp deploy/db/tenderfit-postgrest.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now tenderfit-postgrest
+# Журнал: journalctl -u tenderfit-postgrest -n 100 --no-pager
+
+[Unit]
+Description=TenderFit — PostgREST (API таблиц, Beget Cloud PostgreSQL)
+After=network-online.target
+Wants=network-online.target
+Before=tenderfit-app.service tenderfit-worker.service
+
+[Service]
+EnvironmentFile=/etc/tenderfit/postgrest.env
+ExecStart=/usr/local/bin/postgrest
+Restart=always
+RestartSec=3
+DynamicUser=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target
