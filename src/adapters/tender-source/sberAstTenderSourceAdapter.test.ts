@@ -140,6 +140,40 @@ describe("SberAstTenderSourceAdapter.fetchTenders", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("листает дальше, пока фильтр регионов не наберёт limit", async () => {
+    const moscow = {
+      ...activeSberPurchase,
+      purchCode: "SBR028-0000000011.1",
+      PurchaseCodeNoBidTerm: "SBR028-0000000011",
+      RegionName: "Москва",
+    };
+    const moscow2 = {
+      ...moscow,
+      purchCode: "SBR028-0000000012.1",
+      PurchaseCodeNoBidTerm: "SBR028-0000000012",
+    };
+    const buryatia = {
+      ...activeSberPurchase,
+      purchCode: "SBR028-0000000013.1",
+      PurchaseCodeNoBidTerm: "SBR028-0000000013",
+      RegionName: "Республика Бурятия",
+    };
+    const { impl, calls } = stubFetch([
+      buildSberResponse([moscow, moscow2], 4),
+      buildSberResponse([buryatia, closedSberPurchase], 4),
+    ]);
+    const adapter = makeAdapter(impl);
+
+    const tenders = await adapter.fetchTenders({
+      ...baseQuery,
+      limit: 1,
+      regions: ["бурят"],
+    });
+
+    expect(calls).toHaveLength(2);
+    expect(tenders.map((t) => t.regNumber)).toEqual(["SBR028-0000000013"]);
+  });
+
   it("применяет ценовой фильтр и фильтр регионов локально", async () => {
     const cheap = {
       ...activeSberPurchase,

@@ -183,7 +183,11 @@ export class SberAstTenderSourceAdapter implements TenderSourceAdapter {
         );
       }
 
-      if (merged.size >= limit) break;
+      // Лимит считается после локальных фильтров: регион и цену площадка в
+      // запросе не принимает, и сто лотов первой страницы — это вся страна.
+      // Остановка по `merged.size` отдавала региональному профилю совпадения
+      // только из первой страницы, а остальные страницы не запрашивались.
+      if (this.applyLocalFilters([...merged.values()], query).length >= limit) break;
       // Страниц больше нет: выдача короче размера страницы или исчерпан Total.
       if (returned < this.pageSize) break;
       if ((page + 1) * this.pageSize >= total) break;
