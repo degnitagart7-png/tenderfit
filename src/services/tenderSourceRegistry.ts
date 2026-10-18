@@ -1,6 +1,7 @@
 import type { TenderDataSource } from "@/types/database";
 import type { TenderSourceAdapter } from "@/adapters/types";
 import { EisTenderSourceAdapter } from "@/adapters/tender-source/eisTenderSourceAdapter";
+import { EtpgpbTenderSourceAdapter, etpgpbCardTtlMs } from "@/adapters/tender-source/etpgpbTenderSourceAdapter";
 import { FabrikantTenderSourceAdapter } from "@/adapters/tender-source/fabrikantTenderSourceAdapter";
 import { RoseltorgTenderSourceAdapter } from "@/adapters/tender-source/roseltorgTenderSourceAdapter";
 import { SberAstTenderSourceAdapter } from "@/adapters/tender-source/sberAstTenderSourceAdapter";
@@ -96,6 +97,29 @@ export function createTektorgAdapter(): TektorgTenderSourceAdapter {
       ttlMs: tektorgWindowCacheTtlMs(process.env["SYNC_TEKTORG_WINDOW_CACHE_SEC"]),
     },
   });
+}
+
+/**
+ * Адаптер ЭТП ГПБ конкретным классом.
+ *
+ * Темп запросов у него не настраивается: площадка допускает не больше одного запроса в
+ * секунду, и значение зашито в адаптере (`minIntervalMs` задают только тесты). Кэш карты
+ * сайта и карточек лежит в том же каталоге, что и кэш карточек Росэлторга и Фабриканта
+ * (`SYNC_CARD_CACHE_DIR` или `data/`); `SYNC_ETPGPB_CARD_TTL_HOURS=0` выключает повторное
+ * использование карточек.
+ */
+export function createEtpgpbAdapter(): EtpgpbTenderSourceAdapter {
+  return new EtpgpbTenderSourceAdapter({
+    maxRetries: MAX_RETRIES,
+    cacheDir: cardCacheDir(),
+    cardTtlMs: etpgpbCardTtlMs(process.env["SYNC_ETPGPB_CARD_TTL_HOURS"]),
+  });
+}
+
+/** `SYNC_ETPGPB_DISABLED=1` (или `true`) выключает источник целиком: привязка вернёт null. */
+export function isEtpgpbDisabled(raw: string | undefined = process.env["SYNC_ETPGPB_DISABLED"]): boolean {
+  const value = (raw ?? "").trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes";
 }
 
 export const SOURCE_BINDINGS: readonly SourceBinding[] = [
@@ -195,6 +219,24 @@ export const SOURCE_BINDINGS: readonly SourceBinding[] = [
         rateLimitPerSec: RATE_LIMIT_PER_SEC,
         maxRetries: MAX_RETRIES,
       });
+    },
+  },
+  {
+    source: "ETP_GPB",
+    label: "ЭТП ГПБ",
+    // Единственный адрес площадки, который проверка связи вправе запросить без нарушения
+    // `robots.txt`, — карта сайта: главная страница в разрешённый набор не входит (см.
+    // `etpgpbUrl.ts`). Индекс карты весит около 3 КБ.
+    probeUrl: "https://etpgpb.ru/sitemap.xml",
+    cadenceHours: null,
+    // Региона в карте сайта нет, а поиск запрещён `robots.txt`. Регион определяется по
+    // карточке — адрес поставки лота, регионы лота, название, адрес заказчика — тем же
+    // `regionFromAddresses`, что у ТЭК-Торга, поэтому адаптер отсеивает чужие субъекты сам
+    // и считает их в `filterStats`. Закупки, у которых регион так и не определился,
+    // отбрасываются отдельной причиной: «не определён» не равно «другой регион».
+    honoursRegions: true,
+    async create() {
+      return isEtpgpbDisabled() ? null : createEtpgpbAdapter();
     },
   },
   {

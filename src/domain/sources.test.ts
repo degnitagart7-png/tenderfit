@@ -23,6 +23,7 @@ describe("каталог источников", () => {
       "TEK_TORG",
       "ROSELTORG",
       "FABRIKANT",
+      "ETP_GPB",
     ];
     const listed = SOURCES.map((s) => s.source);
     expect([...listed].sort()).toEqual([...all].sort());
@@ -62,7 +63,7 @@ describe("каталог источников", () => {
     // явно», плановый сбор их не видел: профили сервера и спрос посетителей
     // sources не перечисляют (журнал 05.10.2026: «не выбран ни одним профилем»).
     expect(defaultSources()).toEqual(
-      expect.arrayContaining(["EIS", "TEK_TORG", "SBER_AST", "FABRIKANT", "ROSELTORG"]),
+      expect.arrayContaining(["EIS", "TEK_TORG", "SBER_AST", "FABRIKANT", "ROSELTORG", "ETP_GPB"]),
     );
   });
 
@@ -152,6 +153,43 @@ describe("каталог источников", () => {
   });
 });
 
+describe("ЭТП ГПБ в каталоге", () => {
+  it("бесплатный, опрашивается по умолчанию, документов не отдаёт и в ЕИС не публикуется", () => {
+    const facts = sourceFacts("ETP_GPB");
+    expect(facts.title).toBe("ЭТП ГПБ");
+    expect(facts.cost).toBe("free");
+    expect(facts.byDefault).toBe(true);
+    expect(facts.documents).toBe("none");
+    expect(facts.publishedInEis).toBe(false);
+  });
+
+  it("причина отказа называет закрытый хост файлов, запрет роботам и письменное согласие", () => {
+    const reason = sourceFacts("ETP_GPB").documentsReason ?? "";
+    expect(reason).toMatch(/etp\.gpb\.ru/);
+    expect(reason).toMatch(/робот/);
+    expect(reason).toMatch(/письменн/);
+    expect(reason).toMatch(/скачать файлы/i);
+  });
+
+  it("медленный трек: карточка — отдельный запрос на процедуру", () => {
+    expect(sourceFacts("ETP_GPB").track).toBe("slow");
+  });
+
+  it("приоритет между Фабрикантом и ручным импортом: ЕИС при совпадении номера остаётся авторитетом", () => {
+    // Закупка 223-ФЗ с номером ЕИС хранится под этим номером, и реестр (50) главнее площадки.
+    const gpb = sourceFacts("ETP_GPB").priority;
+    expect(gpb).toBeGreaterThan(sourceFacts("IMPORT").priority);
+    expect(gpb).toBeLessThan(sourceFacts("FABRIKANT").priority);
+    expect(gpb).toBeLessThan(sourceFacts("EIS").priority);
+    expect(gpb).toBeLessThan(sourceFacts("TEK_TORG").priority);
+  });
+
+  it("документация недоступна: файлы читать нечем, глубокий разбор невозможен", () => {
+    expect(documentationSources()).not.toContain("ETP_GPB");
+    expect(eisPublishedSources()).not.toContain("ETP_GPB");
+  });
+});
+
 describe("бесплатная часть прогона", () => {
   /*
     Кнопка «Найти новые закупки» обещает партнёру перечень источников, поэтому
@@ -166,6 +204,7 @@ describe("бесплатная часть прогона", () => {
     expect(sources).toContain("SBER_AST");
     expect(sources).toContain("ROSELTORG");
     expect(sources).toContain("FABRIKANT");
+    expect(sources).toContain("ETP_GPB");
     expect(sources).not.toContain("KONTUR");
   });
 
@@ -188,6 +227,7 @@ describe("бесплатная часть прогона", () => {
       "ТЭК-Торг",
       "Сбербанк-АСТ",
       "Фабрикант",
+      "ЭТП ГПБ",
       "Росэлторг",
     ]);
   });
@@ -208,7 +248,7 @@ describe("бесплатная часть прогона", () => {
  * Два трека опроса: какие площадки быстрые, какие медленные.
  *
  * Медленными названы те, что тратят отдельный запрос карточки на каждую
- * процедуру: Росэлторг и Фабрикант. В прогоне 03.10.2026 они заняли 86 секунд
+ * процедуру: Росэлторг, Фабрикант и ЭТП ГПБ. В прогоне 03.10.2026 они заняли 86 секунд
  * из 280. Остальные отдают выдачу одним-двумя запросами, а платный Контур
  * ограничен своим суточным бюджетом и имеет собственный интервал, поэтому в
  * медленный трек не входит: два разных правила на один источник — это
@@ -222,7 +262,7 @@ describe("треки опроса", () => {
   });
 
   it("медленные — только площадки с запросом карточки на каждую процедуру", () => {
-    expect(slowTrackSources().sort()).toEqual(["FABRIKANT", "ROSELTORG"]);
+    expect(slowTrackSources().sort()).toEqual(["ETP_GPB", "FABRIKANT", "ROSELTORG"]);
   });
 
   it("платный Контур остаётся быстрым: его частоту держит собственный интервал", () => {

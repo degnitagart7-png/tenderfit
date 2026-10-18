@@ -1,10 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   SOURCE_BINDINGS,
   resolveEisRatePerSec,
+  createEtpgpbAdapter,
   createTektorgAdapter,
+  isEtpgpbDisabled,
   sourceBinding,
 } from "./tenderSourceRegistry";
+import { EtpgpbTenderSourceAdapter } from "@/adapters/tender-source/etpgpbTenderSourceAdapter";
+import { isEtpgpbUrlAllowed } from "@/adapters/tender-source/etpgpbUrl";
 import { SOURCES } from "@/domain/sources";
 import type { TenderDataSource } from "@/types/database";
 
@@ -64,12 +68,15 @@ describe("реестр привязок источника", () => {
     //               фильтрует по региону заказчика, а не по месту поставки), зато
     //               карточка печатает регион и адрес поставки лота, поэтому
     //               отсеивает адаптер сам;
+    //   ЭТП ГПБ   — в карте сайта региона нет, а поиск запрещён robots.txt; регион
+    //               определяется по карточке, поэтому отсеивает адаптер сам;
     //   Контур    — принимает только UUID регионов, поэтому отсеивает выдачу сам.
     expect(sourceBinding("EIS")?.honoursRegions).toBe(true);
     expect(sourceBinding("TEK_TORG")?.honoursRegions).toBe(true);
     expect(sourceBinding("SBER_AST")?.honoursRegions).toBe(true);
     expect(sourceBinding("ROSELTORG")?.honoursRegions).toBe(true);
     expect(sourceBinding("FABRIKANT")?.honoursRegions).toBe(true);
+    expect(sourceBinding("ETP_GPB")?.honoursRegions).toBe(true);
     expect(sourceBinding("KONTUR")?.honoursRegions).toBe(true);
   });
 
@@ -82,10 +89,18 @@ describe("реестр привязок источника", () => {
       "SBER_AST",
       "ROSELTORG",
       "FABRIKANT",
+      "ETP_GPB",
     ] as const) {
       const adapter = await sourceBinding(source)?.create();
       expect(adapter, source).not.toBeNull();
     }
+  });
+
+  it("проверка связи ЭТП ГПБ ходит только по адресу, разрешённому robots.txt", () => {
+    // Главная страница в разрешённый набор не входит: проверка связи — тоже запрос.
+    const probe = sourceBinding("ETP_GPB")?.probeUrl ?? "";
+    expect(probe).toBe("https://etpgpb.ru/sitemap.xml");
+    expect(isEtpgpbUrlAllowed(probe)).toBe(true);
   });
 
   it("фабрика ТЭК-Торга отдаёт адаптер с чтением списка документов", () => {
@@ -116,5 +131,30 @@ describe("скорость запросов к ЕИС (EIS_RATE_PER_SEC)", () =>
 
   it("слишком большое значение упирается в потолок", () => {
     expect(resolveEisRatePerSec("100")).toBe(5);
+  });
+});
+
+describe("ЭТП ГПБ: фабрика и выключатель", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("фабрика отдаёт адаптер конкретным классом, с потолками по умолчанию и без смены темпа", () => {
+    const adapter = createEtpgpbAdapter();
+    expect(adapter).toBeInstanceOf(EtpgpbTenderSourceAdapter);
+    expect(typeof adapter.configureBudgets).toBe("function");
+  });
+
+  it("SYNC_ETPGPB_DISABLED выключает источник: привязка возвращает null, а не падает", async () => {
+    for (const raw of ["1", "true", "TRUE", " yes "]) {
+      expect(isEtpgpbDisabled(raw), raw).toBe(true);
+    }
+    for (const raw of [undefined, "", "0", "false", "no", "нет"]) {
+      expect(isEtpgpbDisabled(raw), String(raw)).toBe(false);
+    }
+    vi.stubEnv("SYNC_ETPGPB_DISABLED", "1");
+    expect(await sourceBinding("ETP_GPB")?.create()).toBeNull();
+    vi.stubEnv("SYNC_ETPGPB_DISABLED", "0");
+    expect(await sourceBinding("ETP_GPB")?.create()).not.toBeNull();
   });
 });

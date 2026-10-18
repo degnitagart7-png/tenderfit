@@ -74,6 +74,7 @@ export const dataSourceLabels: Record<TenderDataSource, string> = {
   TEK_TORG: "ТЭК-Торг",
   ROSELTORG: "Росэлторг",
   FABRIKANT: "Фабрикант",
+  ETP_GPB: "ЭТП ГПБ",
 };
 
 /** Подпись кнопки перехода к карточке закупки на площадке-источнике. */
@@ -86,6 +87,7 @@ export const dataSourceLinkLabels: Record<TenderDataSource, string> = {
   TEK_TORG: "Открыть в ТЭК-Торге",
   ROSELTORG: "Открыть в Росэлторге",
   FABRIKANT: "Открыть на Фабриканте",
+  ETP_GPB: "Открыть на ЭТП ГПБ",
 };
 
 /** Тип запроса к платному API Контур.Закупок — для журнала расхода. */

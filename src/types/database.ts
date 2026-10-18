@@ -239,7 +239,8 @@ export type TenderDataSource =
   | "KONTUR"
   | "TEK_TORG"
   | "ROSELTORG"
-  | "FABRIKANT";
+  | "FABRIKANT"
+  | "ETP_GPB";
 
 export interface TenderRow {
   id: string;

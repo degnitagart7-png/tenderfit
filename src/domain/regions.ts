@@ -302,6 +302,38 @@ interface BucketEntry {
 }
 
 /**
+ * Падежные формы варианта: в названиях закупок субъект почти всегда стоит не в
+ * именительном падеже — «на АЗС, расположенных в Белгородской области», «для нужд
+ * Краснодарского края», «Ямало-Ненецкого автономного округа». Без них определение
+ * региона по названию промахивалось и брало запасной адрес — у площадок это часто
+ * офис организатора в другом городе.
+ *
+ * Склоняется только сочетание со словом «область»/«край»/«автономный округ», не голое
+ * прилагательное: «Белгородской» в одиночку — это и «ул. Белгородской», и словарь
+ * такую форму не получает.
+ */
+function inflectedAliases(alias: string): string[] {
+  const oblast = /^([а-я]+)ая (область|обл)$/.exec(alias);
+  if (oblast) {
+    const [, stem, word] = oblast;
+    return word === "обл"
+      ? [`${stem}ой обл`]
+      : [`${stem}ой области`, `${stem}ую область`];
+  }
+  const krai = /^([а-я]+)ий край$/.exec(alias);
+  if (krai) {
+    const stem = krai[1];
+    return [`${stem}ого края`, `${stem}ом крае`, `${stem}ому краю`];
+  }
+  const okrug = /^([а-я ]+?)ий автономный округ$/.exec(alias);
+  if (okrug) {
+    const stem = okrug[1];
+    return [`${stem}ого автономного округа`, `${stem}ом автономном округе`];
+  }
+  return [];
+}
+
+/**
  * Словарь по первой букве варианта, внутри — от длинных вариантов к коротким.
  * Так «Алтайский край» находится раньше, чем «Алтай», и «Московская область» —
  * раньше, чем «Москва».
@@ -310,13 +342,15 @@ const BUCKETS: ReadonlyMap<string, readonly BucketEntry[]> = (() => {
   const buckets = new Map<string, BucketEntry[]>();
   for (const region of REGION_DICTIONARY) {
     for (const raw of region.aliases) {
-      const alias = normalizeRegionText(raw);
-      if (!alias) continue;
-      const first = alias[0];
-      if (!first) continue;
-      const bucket = buckets.get(first) ?? [];
-      bucket.push({ alias, canonical: region.canonical });
-      buckets.set(first, bucket);
+      const base = normalizeRegionText(raw);
+      if (!base) continue;
+      for (const alias of [base, ...inflectedAliases(base)]) {
+        const first = alias[0];
+        if (!first) continue;
+        const bucket = buckets.get(first) ?? [];
+        bucket.push({ alias, canonical: region.canonical });
+        buckets.set(first, bucket);
+      }
     }
   }
   for (const bucket of buckets.values()) {

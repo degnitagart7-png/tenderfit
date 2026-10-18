@@ -611,7 +611,7 @@ describe("TenderSearchPanel — бесплатный прогон площадо
     render(<Harness syncKontur={vi.fn().mockResolvedValue(null)} />);
 
     const text = await panelText();
-    expect(text).toContain("ЕИС, ТЭК-Торг, Сбербанк-АСТ, Фабрикант и Росэлторг");
+    expect(text).toContain("ЕИС, ТЭК-Торг, Сбербанк-АСТ, Фабрикант, ЭТП ГПБ и Росэлторг");
     // Платный агрегатор в бесплатном прогоне не участвует: обещать его — значит
     // обещать расход тарифа, которого партнёр не заказывал.
     expect(text).not.toContain("Контур.Закупки, ");

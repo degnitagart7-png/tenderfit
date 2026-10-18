@@ -36,6 +36,16 @@
  *              показала закупку втрое дешевле настоящей. Документацию площадка
  *              отдаёт байтами без авторизации, но 302 уводит на
  *              `storage.fabrikant.ru`, а `robots.txt` того хоста запрещает всё;
+ *   ETP_GPB  — ЭТП ГПБ (etpgpb.ru, Газпромбанк): корпоративные и коммерческие
+ *              закупки, «Закупки.Газпром», ЭТП Клик. Поиска для роботов у площадки нет:
+ *              `robots.txt` запрещает любой адрес с query-строкой, поэтому процедуры
+ *              находятся по карте сайта (окно просмотра 21 день, без продажи
+ *              имущества), отбираются по ключевым словам профиля в slug адреса, а
+ *              карточка читается отдельным запросом на каждую (один запрос в секунду,
+ *              не больше 40 карточек на профиль и 250 за прогон; прочитанные карточки
+ *              лежат в кэше на диске и повторного запроса не требуют). Документацию
+ *              площадка не отдаёт: файлы лежат на `etp.gpb.ru`, а `robots.txt` того
+ *              хоста запрещает всё. Выключается переменной SYNC_ETPGPB_DISABLED=1;
  *   SBER_AST — Сбербанк-АСТ, секция «Торги коммерческих заказчиков»
  *              (коммерческие закупки, закон COMMERCIAL);
  *   KONTUR   — Контур.Закупки (440+ площадок), ПЛАТНЫЙ API: включается только
@@ -86,9 +96,12 @@
  *   KONTUR_MIN_INTERVAL_HOURS —
  *     платный источник Контур.Закупки (см. docs/REFERENCE_KONTUR_API.md)
  *   SYNC_SLOW_INTERVAL_HOURS (по умолчанию 6; 0 — выключить) —
- *     как часто плановый прогон опрашивает медленный трек: Росэлторг и
- *     Фабрикант, которые тратят отдельный запрос карточки на каждую процедуру.
+ *     как часто плановый прогон опрашивает медленный трек: Росэлторг, Фабрикант и
+ *     ЭТП ГПБ, которые тратят отдельный запрос карточки на каждую процедуру.
  *     Остальные источники идут каждый прогон. Подробности — src/domain/sourceCadence.ts
+ *   SYNC_ETPGPB_DISABLED=1 — выключить ЭТП ГПБ целиком (источник «не настроен»);
+ *   SYNC_ETPGPB_CARD_TTL_HOURS (по умолчанию 72; 0 — не использовать кэш) —
+ *     срок жизни прочитанной карточки ЭТП ГПБ в кэше data/etpgpb-card-cache.json.
  *   SYNC_TRACKS=all или флаг --all-tracks —
  *     опросить оба трека, не проверяя интервал. Воркер ставит это для кнопки
  *     «Запустить прогон» и ручного --full-sync; плановый тик не ставит.
@@ -114,6 +127,7 @@ import type { KonturTenderSourceAdapter } from "../src/adapters/tender-source/ko
 import type { TektorgTenderSourceAdapter } from "../src/adapters/tender-source/tektorgTenderSourceAdapter";
 import type { RoseltorgTenderSourceAdapter } from "../src/adapters/tender-source/roseltorgTenderSourceAdapter";
 import type { FabrikantTenderSourceAdapter } from "../src/adapters/tender-source/fabrikantTenderSourceAdapter";
+import type { EtpgpbTenderSourceAdapter } from "../src/adapters/tender-source/etpgpbTenderSourceAdapter";
 import type { EisTenderSourceAdapter } from "../src/adapters/tender-source/eisTenderSourceAdapter";
 import { DEFAULT_OKPD2_BUDGET, planOkpd2Enrichment } from "../src/domain/okpd2Enrichment";
 import {
@@ -292,6 +306,20 @@ const ROSELTORG_LAWS: TenderLaw[] = ["FZ_223", "COMMERCIAL"];
  * коммерческие и корпоративные процедуры, которых в реестре нет.
  */
 const FABRIKANT_LAWS: TenderLaw[] = ["FZ_223", "COMMERCIAL"];
+
+/**
+ * Законы, которые отдаёт ЭТП ГПБ: извещения 223-ФЗ (у них номер ЕИС, и такая закупка
+ * хранится под ним) и коммерческие закупки с номерами площадки (`ETPGPB-…`). 44-ФЗ
+ * на этой площадке нет, а продажа имущества исключена на уровне карты сайта.
+ */
+const ETPGPB_LAWS: TenderLaw[] = ["FZ_223", "COMMERCIAL"];
+/**
+ * Потолки запросов карточек ЭТП ГПБ в живом поиске: человек ждёт ответа, и сорок секунд
+ * чтения карточек при одном запросе в секунду ему не нужны. Плановый прогон работает с
+ * потолками адаптера (40 на профиль, 250 на прогон).
+ */
+const LIVE_ETPGPB_CARDS_PER_CALL = 15;
+const LIVE_ETPGPB_CARDS_PER_RUN = 25;
 
 interface SyncProfile {
   name: string;
@@ -493,6 +521,7 @@ const PLATFORM_LAWS: Partial<Record<TenderDataSource, readonly TenderLaw[]>> = {
   TEK_TORG: TEK_TORG_LAWS,
   ROSELTORG: ROSELTORG_LAWS,
   FABRIKANT: ["FZ_223", "COMMERCIAL"],
+  ETP_GPB: ETPGPB_LAWS,
 };
 
 function platformServesLaws(source: TenderDataSource, laws: readonly TenderLaw[]): boolean {
@@ -1061,6 +1090,20 @@ async function main(): Promise<void> {
   // процедур осталась неосмотренной из-за предела запросов карточек.
   const fabrikantAdapter =
     (adapters.get("FABRIKANT") as FabrikantTenderSourceAdapter | undefined) ?? null;
+  // ЭТП ГПБ: карта сайта и карточки без ключа, поэтому адаптер есть всегда, когда
+  // источник не выключен `SYNC_ETPGPB_DISABLED` и прошёл проверку связи. Тип нужен ради
+  // `filterStats` — прогон обязан отличать «площадка ничего не нашла» от «мы отбросили» и
+  // сказать, сколько процедур осталось неосмотренными из-за потолка запросов карточек.
+  // Кэши карты и карточек адаптер пишет сам, в конце каждого вызова.
+  const etpgpbAdapter =
+    (adapters.get("ETP_GPB") as EtpgpbTenderSourceAdapter | undefined) ?? null;
+  /**
+   * Снимок ЭТП ГПБ неполный: хотя бы один вызов упёрся в потолок запросов карточек,
+   * получил ограничение доступа или сорвался. Тогда очистка старых строк источника
+   * пропускается — удаление «того, чего нет в снимке» стёрло бы живые закупки, которых
+   * мы просто не успели осмотреть.
+   */
+  let etpgpbSnapshotIncomplete = false;
   // Контур.Закупки: кэш сырых ответов в БД и дневной бюджет читаются из env
   // (см. createKonturAdapter). Стартовые значения по методам берутся из журнала
   // api_usage_log, поэтому прогон сразу видит, сколько бюджета уже потратили
@@ -1087,6 +1130,13 @@ async function main(): Promise<void> {
     const cache = createDiskCardCache({ file: cardCacheFile(source) });
     adapter.useCardCache(cache, reuseHours);
     cardCaches.push(cache);
+  }
+  // Живой поиск: человек ждёт ответа, поэтому потолок карточек ЭТП ГПБ ниже планового.
+  if (liveMode && etpgpbAdapter) {
+    etpgpbAdapter.configureBudgets({
+      perCall: LIVE_ETPGPB_CARDS_PER_CALL,
+      perRun: LIVE_ETPGPB_CARDS_PER_RUN,
+    });
   }
   if (konturAdapter) {
     const spent = konturAdapter.counters.requestsTodayByMethod;
@@ -1139,7 +1189,7 @@ async function main(): Promise<void> {
     сводится тем же правилом приоритета источников (`collectFrom`), и от порядка
     прихода ответов итог не зависит.
   */
-  type Lane = "ЕИС, Сбербанк-АСТ" | "ТЭК-Торг" | "Росэлторг" | "Фабрикант";
+  type Lane = "ЕИС, Сбербанк-АСТ" | "ТЭК-Торг" | "Росэлторг" | "Фабрикант" | "ЭТП ГПБ";
   const lanes = new Map<Lane, Array<() => Promise<void>>>();
   const enqueue = (lane: Lane, step: () => Promise<void>): void => {
     const steps = lanes.get(lane) ?? [];
@@ -1169,6 +1219,7 @@ async function main(): Promise<void> {
     const wantTektorg = queried.some((b) => b.source === "TEK_TORG");
     const wantRoseltorg = queried.some((b) => b.source === "ROSELTORG");
     const wantFabrikant = queried.some((b) => b.source === "FABRIKANT");
+    const wantEtpgpb = queried.some((b) => b.source === "ETP_GPB");
     // Контур.Закупки останавливаются до конца прогона по бюджету или по ключу,
     // и остановка может случиться на середине профиля: поэтому условие читается
     // и при печати заголовка, и перед каждым запросом источника.
@@ -1202,7 +1253,7 @@ async function main(): Promise<void> {
     }
 
     /*
-      Площадки с карточками (ТЭК-Торг, Росэлторг, Фабрикант) тратят запрос на
+      Площадки с карточками (ТЭК-Торг, Росэлторг, Фабрикант, ЭТП ГПБ) тратят запрос на
       каждую найденную процедуру, поэтому в живом поиске им уходит только сам
       запрос, а близкие слова от модели — дешёвым ЕИС и Сбербанк-АСТ.
     */
@@ -1506,6 +1557,67 @@ async function main(): Promise<void> {
             (stats.resolveLimitReached
               ? "; предел запросов карточек достигнут: часть процедур не осмотрена"
               : "") +
+            ".",
+        );
+      }
+    });
+
+    // ЭТП ГПБ: один запрос на профиль со списком слов.
+    //
+    // Поиска у площадки для роботов нет (`robots.txt` запрещает любой адрес с
+    // query-строкой), поэтому адаптер берёт процедуры из карты сайта и отбирает их по
+    // словам профиля в slug адреса, а затем читает карточки по одной. Карта скачивается
+    // один раз на весь прогон, а не на профиль и не на слово: у адаптера один экземпляр, и
+    // загрузка лежит в его памяти. Потолок карточек действует и на вызов, и на прогон.
+    //
+    // Пустой список слов означает обход окна просмотра целиком — самые свежие процедуры
+    // в пределах потолка карточек.
+    if (wantEtpgpb && etpgpbAdapter) enqueue("ЭТП ГПБ", async () => {
+      const { found, ok } = await collectFrom(
+        "ЭТП ГПБ",
+        cardKeywords.join(", ") || "всё окно просмотра",
+        () =>
+          etpgpbAdapter.fetchTenders({
+            laws: ETPGPB_LAWS,
+            keywords: cardKeywords,
+            minPrice: profile.minPrice ?? null,
+            maxPrice: profile.maxPrice ?? null,
+            // Региона в карте сайта нет, а поиск запрещён: регион определяется по
+            // карточке, и адаптер отсеивает чужие субъекты сам, считая закупки с
+            // неопределённым регионом отдельной причиной.
+            regions: regionNames.length > 0 ? regionNames : undefined,
+            // ОКПД2 площадка в карточке не печатает (список пуст у всех замеренных).
+            limit: (profile.limitPerKeyword ?? 10) * Math.max(1, cardKeywords.length),
+          }),
+        unique,
+      );
+      perSource.set("ETP_GPB", (perSource.get("ETP_GPB") ?? 0) + found);
+      if (!ok) etpgpbSnapshotIncomplete = true;
+
+      // Печатается только после состоявшегося запроса: `filterStats` живёт в адаптере, а
+      // одним адаптером прогон обходит несколько профилей, и после сбоя числа в нём
+      // принадлежат предыдущему профилю. Причина уже названа строкой «ОШИБКА — …» выше.
+      if (ok) {
+        const stats = etpgpbAdapter.filterStats;
+        if (stats.budgetReached !== null || stats.blocked !== null || stats.failed > 0) etpgpbSnapshotIncomplete = true;
+        const rejected = describeCountedReasons(stats.rejected);
+        const sitemap =
+          stats.sitemap.source === "память"
+            ? "карта сайта из памяти прогона"
+            : `карта сайта: кусков ${stats.sitemap.chunks} (скачано ${stats.sitemap.downloaded}, из кэша ${stats.sitemap.cached}` +
+              (stats.sitemap.stale > 0 ? `, устаревших ${stats.sitemap.stale}` : "") +
+              (stats.sitemap.failed > 0 ? `, не скачано ${stats.sitemap.failed}` : "") +
+              (stats.sitemap.skipped > 0 ? `, сверх потолка не взято ${stats.sitemap.skipped}` : "") +
+              ")";
+        console.log(
+          `  ЭТП ГПБ: ${sitemap}; в окне просмотра ${stats.window} процедур, по словам в адресе ${stats.candidates}; ` +
+            `карточек прочитано ${stats.fetched}, из кэша ${stats.cached + stats.memoized}, в выдаче ${stats.kept}` +
+            (rejected === "" ? "" : `; отброшено — ${rejected}`) +
+            (stats.failed > 0 ? `; карточек не прочитано (сбой запроса) ${stats.failed}` : "") +
+            (stats.budgetReached !== null
+              ? `; предел запросов карточек (${stats.budgetReached}) достигнут: ${stats.deferred} процедур не осмотрено`
+              : "") +
+            (stats.blocked !== null ? `; ${stats.blocked}` : "") +
             ".",
         );
       }
@@ -1864,6 +1976,12 @@ async function main(): Promise<void> {
       // не опрошена), и очистка стёрла бы старые закупки, которых мы просто не увидели.
       if (source === "EIS" && eisBlockedRetryAt !== null) {
         console.log("Очистка EIS пропущена: ЕИС ограничила доступ, снимок неполный");
+        continue;
+      }
+      // ЭТП ГПБ: снимок неполный (потолок карточек, ограничение доступа, сбой запроса),
+      // и очистка стёрла бы живые закупки, которые мы не успели осмотреть.
+      if (source === "ETP_GPB" && etpgpbSnapshotIncomplete) {
+        console.log("Очистка ETP_GPB пропущена: снимок неполный (потолок запросов карточек, ограничение доступа или сбой запроса)");
         continue;
       }
       if ((perSource.get(source) ?? 0) === 0) {
