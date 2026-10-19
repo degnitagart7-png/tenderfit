@@ -588,7 +588,8 @@ describe("syncJobRepository", () => {
       const columns = String(allArgsOf("sync_jobs", "select")[0]?.[0]);
       // Тексты файлов и вся смета в список не выбираются: только отдельные поля JSON.
       expect(columns).not.toMatch(/(^|,\s*)(payload|report|\*)(\s*,|$)/);
-      expect(columns).not.toContain("payload->documents");
+      // Тексты документов не выбираются: разрешено только имя первого файла по индексу.
+      expect(columns.replace("payload->documents->0->>name", "")).not.toContain("payload->documents");
       expect(columns).toContain("payload->documentNames");
       expect(columns).toContain("report->estimate->document->totals->>total");
     });
@@ -636,6 +637,18 @@ describe("syncJobRepository", () => {
         totalRub: null,
         error: "Воркер упал",
       });
+    });
+
+    it("у старого задания без documentNames — имя первого файла из payload.documents", async () => {
+      mockTable("sync_jobs", {
+        data: [row({ document_names: null, first_document: "Дренажи 2026.xlsx" }), row({ id: "job-4", document_names: null, first_document: null })],
+        error: null,
+      });
+      const { syncJobRepository } = await import("./syncJobRepository");
+
+      const [old, unknown] = await syncJobRepository.listEstimateHistory("anna@firma.ru", { limit: 5 });
+      expect(old?.documentNames).toEqual(["Дренажи 2026.xlsx"]);
+      expect(unknown?.documentNames).toBeNull();
     });
 
     it("причина сбоя урезается, нулевая или нечисловая сумма — null", async () => {

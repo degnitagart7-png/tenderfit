@@ -61,6 +61,10 @@ const HISTORY_SELECT = [
   "mode:payload->>mode",
   "reason:payload->>reason",
   "document_names:payload->documentNames",
+  // Имя первого файла — для заданий до 20.10.2026, когда documentNames ещё не писали: иначе
+  // старые расчёты по файлам в списке неотличимы («Расчёт по документации»). Путь по индексу
+  // PostgREST принимает (проверено на проде 20.10.2026), текст документа не выбирается.
+  "first_document:payload->documents->0->>name",
   "total:report->estimate->document->totals->>total",
 ].join(", ");
 
@@ -75,13 +79,16 @@ interface HistoryDbRow {
   mode: string | null;
   reason: string | null;
   document_names: unknown;
+  first_document?: string | null;
   total: unknown;
 }
 
 function toHistoryItem(row: HistoryDbRow): EstimateHistoryItem {
-  const names = Array.isArray(row.document_names)
+  const listed = Array.isArray(row.document_names)
     ? row.document_names.filter((name): name is string => typeof name === "string")
     : null;
+  const first = typeof row.first_document === "string" && row.first_document.trim() !== "" ? row.first_document.trim() : null;
+  const names = listed !== null && listed.length > 0 ? listed : first !== null ? [first] : listed;
   // PostgREST отдаёт число по пути `->>` строкой; нет суммы или не число — null.
   const total = typeof row.total === "string" ? Number(row.total) : row.total;
   const error = typeof row.error === "string" && row.error.trim() !== "" ? row.error.trim().slice(0, HISTORY_ERROR_CHARS) : null;
