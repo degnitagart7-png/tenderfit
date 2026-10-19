@@ -56,7 +56,7 @@ export const dynamic = "force-dynamic";
  * документы (MAX_TOTAL_CHARS в /api/estimate), и один файл не должен занимать
  * его целиком: остальным документам тоже нужно место.
  */
-export const PARSE_BUDGET_CHARS = 1_500_000;
+const PARSE_BUDGET_CHARS = 1_500_000;
 
 /** Обвязка multipart: границы и заголовки части. Для предварительной проверки Content-Length. */
 const MULTIPART_OVERHEAD_BYTES = 64 * 1024;
