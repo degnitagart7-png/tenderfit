@@ -1,6 +1,7 @@
 import { sanitizePgText, sanitizePgTextOrNull } from "@/lib/sanitizeText";
 import { getSupabaseServerClient } from "@/lib/supabase";
 import type {
+  ArchiveReport,
   DocumentMeta,
   DocumentRawJson,
   DocumentSkipMark,
@@ -30,7 +31,7 @@ interface UpdateParsedInput {
   /** Текст дошёл не целиком: в разбор попала часть файла. */
   truncated?: boolean;
   /** Для архива: прочитано входов из скольких. null — файл не архив. */
-  archive?: { parsed: number; total: number } | null;
+  archive?: ArchiveReport | null;
   /** Текст распознан со скана: страниц распознано из скольких. */
   ocr?: { pages: number; totalPages: number } | null;
 }
@@ -66,7 +67,7 @@ export interface SaveParsedDocumentInput {
   /** Текст обрезан по остатку бюджета: в разбор попала часть файла. */
   truncated?: boolean;
   /** Для архива: прочитано входов из скольких. null — файл не архив. */
-  archive?: { parsed: number; total: number } | null;
+  archive?: ArchiveReport | null;
   /** Текст распознан со скана (OCR): страниц распознано из скольких. */
   ocr?: { pages: number; totalPages: number } | null;
 }
@@ -98,6 +99,23 @@ const META_COLUMNS =
   "id, filename, document_type, source_type, file_url, parsed_status, download_status, content_hash, file_size, error_message, created_at, updated_at, raw_json";
 
 /**
+ * Отчёт об архиве в виде для jsonb: имена входов приходят из распаковщика и
+ * могут нести управляющие знаки, которые jsonb не принимает. Пустой список
+ * пропусков не пишется — запись архива, прочитанного целиком, не раздувается.
+ */
+function archiveJson(archive: ArchiveReport): Record<string, unknown> {
+  const { skipped, ...counts } = archive;
+  if (!skipped || skipped.length === 0) return counts;
+  return {
+    ...counts,
+    skipped: skipped.map((entry) => ({
+      name: sanitizePgText(entry.name),
+      reason: sanitizePgText(entry.reason),
+    })),
+  };
+}
+
+/**
  * Служебные поля для raw_json. Пустой объект не пишется: колонка остаётся null,
  * как у строк прежней версии, и их легко отличить запросом.
  */
@@ -105,7 +123,7 @@ function rawJson(fields: {
   title?: string | null;
   chars?: number | null;
   truncated?: boolean;
-  archive?: { parsed: number; total: number } | null;
+  archive?: ArchiveReport | null;
   ocr?: { pages: number; totalPages: number } | null;
   skipped?: DocumentSkipMark | null;
 }): Record<string, unknown> | null {
@@ -123,7 +141,7 @@ function rawJson(fields: {
     сорок файлов, от zip, где прочитан один, а остальные — сканы. Обе строки
     выглядели одинаково успешными.
   */
-  if (fields.archive) value["archive"] = fields.archive;
+  if (fields.archive) value["archive"] = archiveJson(fields.archive);
   // Признак распознавания: по нему анализ и карточка знают, что текст получен
   // со скана и может содержать ошибки распознавания.
   if (fields.ocr) value["ocr"] = fields.ocr;
@@ -228,6 +246,19 @@ function toDocumentMeta(row: Record<string, unknown>): DocumentMeta {
     raw_json: raw && typeof raw === "object" ? (raw as DocumentRawJson) : null,
   };
 }
+
+/**
+ * Шаблоны имён архивов и томов для `listParsedArchives` (PostgREST: `*` — любая
+ * подстрока). Расширения те же, что у fileFormats: zip, rar, 7z, тома `.001`
+ * (zip/rar/7z-нарезка) и `.part1.rar`.
+ */
+export const ARCHIVE_NAME_PATTERNS: readonly string[] = [
+  "*.zip",
+  "*.rar",
+  "*.7z",
+  "*.001",
+  "*.part*.rar",
+];
 
 /** Сколько документов с текстами читать одновременно в `findByTenderId`. */
 const DOCUMENT_TEXT_CONCURRENCY = 3;
@@ -337,6 +368,55 @@ export const documentRepository = {
         .not("file_url", "is", null);
       if (options.tenderId) query = query.eq("tender_id", options.tenderId);
       if (filter.length > 0) query = query.or(filter);
+
+      const { data, error } = await query
+        .order("tender_id", { ascending: true })
+        .order("created_at", { ascending: true })
+        .range(from, from + pageSize - 1);
+      if (error) throw error;
+
+      const page = (data ?? []) as unknown as Record<string, unknown>[];
+      for (const row of page) {
+        rows.push({
+          ...toDocumentMeta(row),
+          tender_id: row["tender_id"] as string,
+        });
+      }
+      if (page.length < pageSize) break;
+    }
+    return rows;
+  },
+
+  /**
+   * Прочитанные («parsed») документы со ссылкой на файл, чьё имя похоже на архив
+   * или том архива. Нужен scripts/reparse-unreadable.ts (группа archive_partial):
+   * какие из них прочитаны частично, решает вызывающий код по raw_json.archive —
+   * число в jsonb запросом не сравнить.
+   *
+   * Запрос лёгкий намеренно: parsed_text не выбирается (на больших текстах прод
+   * упирался в statement timeout), отбор идёт по статусу и по имени файла, выдача
+   * постраничная. Архив с чужим расширением (zip под именем «.pdf») сюда не
+   * попадает — это цена лёгкого запроса; такие файлы читаются нынешним
+   * разбором при обычной загрузке.
+   */
+  async listParsedArchives(options: {
+    tenderId?: string;
+  }): Promise<Array<DocumentMeta & { tender_id: string }>> {
+    const supabase = getSupabaseServerClient();
+    const filter = ARCHIVE_NAME_PATTERNS.map(
+      (pattern) => `filename.ilike.${pattern}`,
+    ).join(",");
+    const pageSize = 1000;
+    const rows: Array<DocumentMeta & { tender_id: string }> = [];
+
+    for (let from = 0; ; from += pageSize) {
+      let query = supabase
+        .from("tender_documents")
+        .select(`tender_id, ${META_COLUMNS}`)
+        .eq("parsed_status", "parsed")
+        .not("file_url", "is", null)
+        .or(filter);
+      if (options.tenderId) query = query.eq("tender_id", options.tenderId);
 
       const { data, error } = await query
         .order("tender_id", { ascending: true })
@@ -501,7 +581,7 @@ export const documentRepository = {
       patch["raw_json"] = {
         ...current,
         ...(input.truncated === true ? { truncated: true } : {}),
-        ...(input.archive ? { archive: input.archive } : {}),
+        ...(input.archive ? { archive: archiveJson(input.archive) } : {}),
         ...(input.ocr ? { ocr: input.ocr } : {}),
       };
     }

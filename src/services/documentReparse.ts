@@ -66,7 +66,27 @@ export type ReparseCategory =
   /** «Не влез в бюджет … знаков»: бюджет снят (2026-10-08), файл можно прочитать. */
   | "budget"
   /** «Файл/комплект больше предела … и не читается»: предел поднят до 300 МБ и 2 ГБ. */
-  | "limit";
+  | "limit"
+  /**
+   * Архив с parsed_status = 'parsed', но прочитанный частично (raw_json.archive.parsed
+   * < total), причём без списка пропусков: так записывал прежний разбор. На проде
+   * 2026-10-19 таких строк 57 (49 закупок), 1 327 входов не прочитано; нынешний
+   * парсер читает те же файлы целиком. Строки нового разбора несут
+   * archive.skipped, поэтому честно непрочитываемый архив (чертежи dwg, родные
+   * файлы смет) повторно не выбирается.
+   */
+  | "archive_partial";
+
+/** Все группы по именам: для проверки параметра --only. */
+export const REPARSE_CATEGORIES: readonly ReparseCategory[] = [
+  "format",
+  "scan",
+  "module",
+  "pdf_structure",
+  "budget",
+  "limit",
+  "archive_partial",
+];
 
 /**
  * Подстроки причин для грубого отбора в базе. Точный отбор делает
@@ -167,6 +187,26 @@ export interface ReparseDoc {
   /** Знаков текста из raw_json.chars; null — у строки прежней версии поля нет. */
   chars: number | null;
   fileSize: number | null;
+  /**
+   * Состав архива из raw_json.archive: прочитано входов из скольких. null — строка
+   * не архив или записана до отчёта об архивах. `listed` — записан ли список
+   * пропущенных (archive.skipped): он есть только у строк нынешнего разбора.
+   */
+  archive?: { parsed: number; total: number; listed: boolean } | null;
+}
+
+/**
+ * Архив прочитан частично прежним разбором: строка «parsed», прочитано меньше,
+ * чем входов, и списка пропусков нет (его пишет только нынешний разбор).
+ */
+export function isPartialArchive(doc: ReparseDoc): boolean {
+  return (
+    doc.parsedStatus === "parsed" &&
+    Boolean(doc.fileUrl) &&
+    doc.archive != null &&
+    !doc.archive.listed &&
+    doc.archive.parsed < doc.archive.total
+  );
 }
 
 /** Порты базы: чтение строк и запись результата. */
@@ -176,6 +216,13 @@ export interface ReparseStore {
     reasonLike: readonly string[];
     tenderId?: string;
   }): Promise<ReparseDoc[]>;
+  /**
+   * Прочитанные («parsed») архивы со ссылкой на файл, у которых raw_json.archive.parsed
+   * меньше total. База отбирает по имени файла и статусу (без parsed_text — на
+   * больших текстах прод упирается в таймаут запроса), число сравнивает код:
+   * `isPartialArchive` перепроверяет каждую строку.
+   */
+  listPartialArchives(options: { tenderId?: string }): Promise<ReparseDoc[]>;
   /** Все строки закупки: нужны для бюджета знаков и для состава комплекта томов. */
   listTender(tenderId: string): Promise<ReparseDoc[]>;
   /** Запись результата — тот же метод, что у обычной загрузки. */
@@ -203,6 +250,8 @@ export interface ReparseOptions {
   tenderId?: string;
   /** Предел знаков на закупку; по умолчанию боевой. Параметр нужен тестам. */
   budgetChars?: number;
+  /** Только одна группа (`--only archive_partial`); не задано — все. */
+  only?: ReparseCategory;
 }
 
 export interface ReparseReport {
@@ -225,6 +274,10 @@ export interface ReparseReport {
   skippedSets: number;
   /** Отказы по пределу объёма, записанные на машине без 7z и unrar, при том, что их нет и здесь. */
   skippedNoCli: number;
+  /** Частично прочитанные архивы, у которых после перечитывания текст стал полнее и строка заменена. */
+  improved: number;
+  /** Частично прочитанные архивы, у которых новый разбор не лучше прежнего: строка осталась как была. */
+  notImproved: number;
   /** Документов, которые не удалось записать в базу: ошибка в журнале, прогон пошёл дальше. */
   saveFailures: number;
   /** Прогон остановлен (слишком много сбоев записи подряд); null — дошёл до конца. */
@@ -248,6 +301,7 @@ function emptyReport(): ReparseReport {
       pdf_structure: 0,
       budget: 0,
       limit: 0,
+      archive_partial: 0,
     },
     processed: 0,
     recovered: 0,
@@ -256,6 +310,8 @@ function emptyReport(): ReparseReport {
     overBudget: 0,
     skippedSets: 0,
     skippedNoCli: 0,
+    improved: 0,
+    notImproved: 0,
     saveFailures: 0,
     aborted: null,
   };
@@ -315,8 +371,38 @@ function prepare(attachment: FetchedAttachment): PreparedDocument {
 
 /** Единица работы: одиночный файл или комплект томов. */
 type Unit =
-  | { kind: "file"; doc: ReparseDoc; needsOcr: boolean }
-  | { kind: "set"; name: string; docs: ReparseDoc[] };
+  | { kind: "file"; doc: ReparseDoc; needsOcr: boolean; partial: boolean }
+  | { kind: "set"; name: string; docs: ReparseDoc[]; partial: boolean };
+
+/**
+ * Лучше ли новый результат прежнего у частично прочитанного архива.
+ *
+ * Заменяем только на улучшение: больше прочитанных входов либо при том же числе
+ * входов — больше знаков. Пропуск (скачивание не удалось, архив теперь «пуст»)
+ * и меньшее число входов прежнюю строку не трогают: текст в ней уже есть, и
+ * терять его ради отчёта «не вышло» нельзя.
+ */
+export function archiveVerdict(
+  old: ReparseDoc,
+  next: PreparedDocument | undefined,
+): { better: boolean; note: string } {
+  const was = old.archive ? `${old.archive.parsed} из ${old.archive.total}` : "?";
+  if (!next) return { better: false, note: "нового результата нет" };
+  if (next.skipped !== null)
+    return { better: false, note: `новый разбор не дал текста: ${next.skipped.reason}` };
+  const oldParsed = old.archive?.parsed ?? 0;
+  const newParsed = next.archive?.parsed ?? 0;
+  const now = next.archive ? `${next.archive.parsed} из ${next.archive.total}` : "?";
+  const oldChars = old.chars ?? 0;
+  const better =
+    newParsed > oldParsed || (newParsed === oldParsed && next.chars > oldChars);
+  return {
+    better,
+    note:
+      `входов было ${was}, стало ${now}; знаков было ` +
+      `${oldChars.toLocaleString("ru-RU")}, стало ${next.chars.toLocaleString("ru-RU")}`,
+  };
+}
 
 /** Файлу нужно распознавание, чтобы стать текстом. */
 function needsOcr(doc: ReparseDoc, category: ReparseCategory): boolean {
@@ -341,6 +427,7 @@ function planUnits(
 
   candidates.forEach(({ doc, category }, index) => {
     const set = isVolumeName(doc.filename) ? volumeSetName(doc.filename) : null;
+    const partial = category === "archive_partial";
     if (set !== null) {
       if (seenSets.has(set)) return;
       seenSets.add(set);
@@ -350,11 +437,15 @@ function planUnits(
       const docs = all
         .filter((row) => volumeSetName(row.filename) === set)
         .sort((left, right) => left.filename.localeCompare(right.filename));
-      units.push({ unit: { kind: "set", name: set, docs }, name: set, index });
+      units.push({
+        unit: { kind: "set", name: set, docs, partial },
+        name: set,
+        index,
+      });
       return;
     }
     units.push({
-      unit: { kind: "file", doc, needsOcr: needsOcr(doc, category) },
+      unit: { kind: "file", doc, needsOcr: needsOcr(doc, category), partial },
       name: doc.title ?? doc.filename,
       index,
     });
@@ -373,15 +464,22 @@ function planUnits(
 /** Закупки с кандидатами в порядке появления; у каждой — только кандидаты. */
 function groupByTender(
   rows: readonly ReparseDoc[],
+  only?: ReparseCategory,
 ): Map<string, { doc: ReparseDoc; category: ReparseCategory }[]> {
   const grouped = new Map<
     string,
     { doc: ReparseDoc; category: ReparseCategory }[]
   >();
   for (const doc of rows) {
-    if (doc.parsedStatus === "parsed" || !doc.fileUrl) continue;
-    const category = classifyReparseReason(doc.reason);
+    if (!doc.fileUrl) continue;
+    const category: ReparseCategory | null =
+      doc.parsedStatus === "parsed"
+        ? isPartialArchive(doc)
+          ? "archive_partial"
+          : null
+        : classifyReparseReason(doc.reason);
     if (category === null) continue;
+    if (only !== undefined && category !== only) continue;
     const bucket = grouped.get(doc.tenderId);
     if (bucket) bucket.push({ doc, category });
     else grouped.set(doc.tenderId, [{ doc, category }]);
@@ -401,12 +499,22 @@ export async function reparseUnreadable(
   const report = emptyReport();
   const budget = Math.max(0, options.budgetChars ?? MAX_TOTAL_CHARS_PER_TENDER);
 
-  const rows = await deps.store.listUnreadable({
-    reasonLike: REPARSE_REASON_FRAGMENTS,
-    ...(options.tenderId ? { tenderId: options.tenderId } : {}),
-  });
+  const scope = options.tenderId ? { tenderId: options.tenderId } : {};
+  // Нечитаемые и частично прочитанные архивы — разные запросы к базе: `--only`
+  // не должен тянуть ни одного лишнего.
+  const rows = [
+    ...(options.only === "archive_partial"
+      ? []
+      : await deps.store.listUnreadable({
+          reasonLike: REPARSE_REASON_FRAGMENTS,
+          ...scope,
+        })),
+    ...(options.only === undefined || options.only === "archive_partial"
+      ? await deps.store.listPartialArchives(scope)
+      : []),
+  ];
 
-  const grouped = groupByTender(rows);
+  const grouped = groupByTender(rows, options.only);
   const tenderIds = [...grouped.keys()].slice(
     0,
     options.limit && options.limit > 0 ? options.limit : undefined,
@@ -427,7 +535,8 @@ export async function reparseUnreadable(
       `[dry-run] закупок ${report.tenders}, документов ${report.candidates}: ` +
         `форматы ${report.byCategory.format}, сканы ${report.byCategory.scan}, ` +
         `модули ${report.byCategory.module}, pdf ${report.byCategory.pdf_structure}, ` +
-        `бюджет ${report.byCategory.budget}, предел объёма ${report.byCategory.limit}`,
+        `бюджет ${report.byCategory.budget}, предел объёма ${report.byCategory.limit}, ` +
+        `архивы прочитаны частично ${report.byCategory.archive_partial}`,
     );
     deps.log(
       ocr
@@ -437,7 +546,10 @@ export async function reparseUnreadable(
     for (const tenderId of tenderIds) {
       for (const { doc, category } of grouped.get(tenderId) ?? []) {
         deps.log(
-          `  ${tenderId}  ${doc.filename}  [${category}]  ${doc.reason ?? ""}`,
+          `  ${tenderId}  ${doc.filename}  [${category}]  ` +
+            (category === "archive_partial" && doc.archive
+              ? `прочитано ${doc.archive.parsed} из ${doc.archive.total} файлов архива`
+              : (doc.reason ?? "")),
         );
       }
     }
@@ -484,7 +596,23 @@ export async function reparseUnreadable(
 
     for (const unit of planUnits(candidates, all)) {
       let documents: PreparedDocument[];
-      const remaining = budget - used;
+      // Частично прочитанный архив уже занимает бюджет своим прежним текстом, но
+      // его заменят: старый объём в остаток не вычитается.
+      const previous = unit.partial
+        ? unit.kind === "file"
+          ? unit.doc
+          : unit.docs[0]
+        : undefined;
+      const previousChars = previous
+        ? occupiedChars({
+            filename: previous.filename,
+            parsedStatus: previous.parsedStatus,
+            chars: previous.chars,
+            fileSize: previous.fileSize,
+            skipCode: previous.skipCode,
+          })
+        : 0;
+      const remaining = budget - used + previousChars;
 
       if (unit.kind === "file") {
         if (unit.needsOcr && !ocr) {
@@ -525,7 +653,9 @@ export async function reparseUnreadable(
         }
       } else {
         const set = unit;
-        if (set.docs.some((doc) => doc.parsedStatus === "parsed")) {
+        // У частично прочитанного комплекта первый том «parsed» по определению:
+        // это и есть причина перечитать, а не признак «уже прочитан».
+        if (!set.partial && set.docs.some((doc) => doc.parsedStatus === "parsed")) {
           report.skippedSets += 1;
           deps.log(`  = комплект «${set.name}»: уже прочитан, пропущен`);
           continue;
@@ -566,6 +696,19 @@ export async function reparseUnreadable(
         }
       }
 
+      if (previous) {
+        const verdict = archiveVerdict(previous, documents[0]);
+        if (!verdict.better) {
+          report.processed += 1;
+          report.notImproved += 1;
+          deps.log(
+            `  = ${previous.filename}: не лучше прежнего, строка не тронута (${verdict.note})`,
+          );
+          continue;
+        }
+        deps.log(`  ↑ ${previous.filename}: ${verdict.note}`);
+      }
+
       report.processed += 1;
       let savedReadable = false;
 
@@ -602,7 +745,13 @@ export async function reparseUnreadable(
       }
 
       // Счёт ведётся по записанному: документ, который не сохранился, прочитанным не считается.
-      if (savedReadable) report.recovered += 1;
+      if (previous) {
+        if (savedReadable) {
+          report.improved += 1;
+          // Прежний текст заменён новым: в бюджете остаётся только новый.
+          used -= previousChars;
+        }
+      } else if (savedReadable) report.recovered += 1;
       else if (!documents.some((d) => d.skipped?.code === "over_char_budget"))
         report.stillUnreadable += 1;
     }
@@ -638,6 +787,16 @@ export function parseReparseArgs(argv: readonly string[]): ReparseOptions & {
         if (!value)
           throw new Error("--tender требует реестровый номер закупки");
         options.tenderId = value;
+        i += 1;
+        break;
+      }
+      case "--only": {
+        const value = argv[i + 1];
+        if (!value || !REPARSE_CATEGORIES.includes(value as ReparseCategory))
+          throw new Error(
+            `--only требует одну из групп: ${REPARSE_CATEGORIES.join(", ")}`,
+          );
+        options.only = value as ReparseCategory;
         i += 1;
         break;
       }

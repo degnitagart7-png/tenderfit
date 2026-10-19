@@ -52,7 +52,16 @@ interface LoadedDocument {
   readonly hasEstimate: boolean;
 }
 
-const ACCEPT = ".pdf,.docx,.doc,.xlsx,.xls,.xlsm,.ods,.csv,.txt";
+/*
+  Форматы, которые читает браузерный разбор (documentParser.parseDocument): файл
+  не уходит на сервер, на сервер уходит только текст. Серверный разбор шире — zip,
+  rar, 7z и сканы с распознаванием, — но сюда он не дотягивается: архивы
+  распаковываются, а Tesseract запускается только на машине воркера. Эти форматы
+  в список намеренно не входят: файл прошёл бы выбор и тут же вернулся бы
+  «Неподдерживаемый формат». Архив из закупки читает карточка закупки; здесь его
+  нужно распаковать и загрузить файлы по отдельности.
+*/
+const ACCEPT = ".pdf,.docx,.doc,.xlsx,.xls,.xlsm,.ods,.ots,.odt,.ott,.rtf,.csv,.txt";
 
 function Step({
   n,
@@ -263,7 +272,13 @@ export function EstimateUploadView() {
                   </>
                 )}
               </p>
-              <p className="muted text-[12.5px]">PDF, Word, Excel (xlsx, xls), CSV · файлы читаются у вас в браузере, отправляется только текст</p>
+              <p className="muted text-[12.5px]">
+                PDF, Word, Excel (xlsx, xls), OpenDocument (odt, ods), RTF, CSV · файлы читаются у вас в браузере, отправляется только текст
+              </p>
+              <p className="muted text-[12.5px]">
+                Архивы (zip, rar, 7z) и сканы-картинки здесь не читаются: распакуйте архив и загрузите файлы по отдельности. Родные файлы
+                сметных программ (.gsfx, .xml) тоже не читаются — выгрузите смету в Excel или PDF.
+              </p>
               <input
                 ref={fileInput}
                 type="file"

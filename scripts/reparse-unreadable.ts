@@ -36,6 +36,8 @@ config({ path: resolve(__dirname, "../.env.local") });
  *   npx tsx scripts/reparse-unreadable.ts --dry-run          — список и счёт, без скачивания и записи
  *   npx tsx scripts/reparse-unreadable.ts --limit 5          — не больше пяти закупок
  *   npx tsx scripts/reparse-unreadable.ts --tender 0134300025826000377
+ *   npx tsx scripts/reparse-unreadable.ts --only archive_partial --dry-run
+ *                                                            — архивы, прочитанные частично (parsed < total)
  *   npx tsx scripts/reparse-unreadable.ts                    — всё найденное
  *
  * Ограничение «--limit N» считается в закупках, а не в файлах: тома одной
@@ -50,6 +52,8 @@ function printUsage(): void {
       "  --dry-run          только перечислить и посчитать; ничего не скачивать и не писать",
       "  --limit <N>        обработать не больше N закупок",
       "  --tender <номер>   одна закупка по реестровому номеру",
+      "  --only <группа>    одна группа: format, scan, module, pdf_structure, budget, limit,",
+      "                     archive_partial (архивы, прочитанные частично прежним разбором)",
     ].join("\n"),
   );
 }
@@ -76,6 +80,15 @@ function toReparseDoc(row: DocumentMeta & { tender_id: string }): ReparseDoc {
     skipCode: documentSkipMark(row)?.code ?? null,
     chars: row.raw_json?.chars ?? null,
     fileSize: row.file_size,
+    archive: row.raw_json?.archive
+      ? {
+          parsed: row.raw_json.archive.parsed,
+          total: row.raw_json.archive.total,
+          // Список пропусков пишет только нынешний разбор: по нему строки
+          // прежнего разбора отличаются от честно непрочитанных архивов.
+          listed: Array.isArray(row.raw_json.archive.skipped),
+        }
+      : null,
   };
 }
 
@@ -83,6 +96,10 @@ function toReparseDoc(row: DocumentMeta & { tender_id: string }): ReparseDoc {
 const store: ReparseStore = {
   async listUnreadable(options) {
     const rows = await documentRepository.listUnreadable(options);
+    return rows.map(toReparseDoc);
+  },
+  async listPartialArchives(options) {
+    const rows = await documentRepository.listParsedArchives(options);
     return rows.map(toReparseDoc);
   },
   async listTender(tenderId) {
@@ -129,7 +146,8 @@ async function main(): Promise<void> {
     `Итог: кандидатов ${report.candidates} в ${report.tenders} закупках ` +
       `(форматы ${report.byCategory.format}, сканы ${report.byCategory.scan}, ` +
       `модули ${report.byCategory.module}, pdf ${report.byCategory.pdf_structure}, ` +
-      `бюджет ${report.byCategory.budget}, предел объёма ${report.byCategory.limit}).`,
+      `бюджет ${report.byCategory.budget}, предел объёма ${report.byCategory.limit}, ` +
+      `архивы прочитаны частично ${report.byCategory.archive_partial}).`,
   );
   if (!options.dryRun) {
     console.log(
@@ -137,6 +155,7 @@ async function main(): Promise<void> {
         `осталось нечитаемым ${report.stillUnreadable}, не влезло в бюджет ${report.overBudget}, ` +
         `сканов без распознавания пропущено ${report.skippedNoOcr}, комплектов пропущено ${report.skippedSets}, ` +
         `отказов по объёму без 7z/unrar пропущено ${report.skippedNoCli}, ` +
+        `архивов дочитано ${report.improved}, не лучше прежнего ${report.notImproved}, ` +
         `сбоев сохранения ${report.saveFailures}. ` +
         `${((Date.now() - started) / 1000).toFixed(1)} с.`,
     );

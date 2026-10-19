@@ -340,7 +340,11 @@ describe("parseAttachment — архив", () => {
     );
     expect(result.status).toBe("parsed");
     expect(result.text).toContain(LONG_TEXT);
-    expect(result.archive).toEqual({ parsed: 1, total: 2 });
+    expect(result.archive).toEqual({
+      parsed: 1,
+      total: 2,
+      skipped: [{ name: "не читается.rar", reason: expect.any(String) }],
+    });
   });
 
   it("архив, в котором нечего читать, получает причину", async () => {
@@ -370,7 +374,147 @@ describe("parseAttachment — архив", () => {
     expect(result.status).toBe("parsed");
     expect(result.truncated).toBe(true);
     expect(result.text).toHaveLength(150);
-    expect(result.archive).toEqual({ parsed: 2, total: 3 });
+    expect(result.archive).toEqual({
+      parsed: 2,
+      total: 3,
+      skipped: [
+        { name: "c.txt", reason: "не читался: бюджет знаков на архив исчерпан" },
+      ],
+    });
+  });
+
+  describe("отчёт о пропущенных входах", () => {
+    it("называет файл и причину; каталоги не считаются ни входами, ни пропусками", async () => {
+      const zip = new JSZip();
+      zip.folder("Раздел 1");
+      zip.file("Раздел 1/ТЗ.txt", LONG_TEXT);
+      zip.file("Раздел 1/Смета.gsfx", "<gsfx/>");
+      zip.file("Чертёж.dwg", "AC1015");
+      const bytes = await zip.generateAsync({ type: "uint8array" });
+
+      const result = await parseAttachment(bytes, "Документация.zip", null, 100_000, {
+        archiveCli: null,
+      });
+
+      expect(result.archive?.parsed).toBe(1);
+      expect(result.archive?.total).toBe(3);
+      const names = result.archive?.skipped?.map((entry) => entry.name).sort();
+      expect(names).toEqual(["Раздел 1/Смета.gsfx", "Чертёж.dwg"]);
+      for (const entry of result.archive?.skipped ?? []) {
+        expect(entry.reason.length).toBeGreaterThan(0);
+        expect(entry.reason.length).toBeLessThanOrEqual(160);
+      }
+    });
+
+    it("архив, прочитанный целиком, не получает поля skipped", async () => {
+      const bytes = await makeZip({ "a.txt": LONG_TEXT });
+      const result = await parseAttachment(bytes, "A.zip", null, 100_000, {
+        archiveCli: null,
+      });
+      expect(result.archive).toEqual({ parsed: 1, total: 1 });
+      expect(result.archive).not.toHaveProperty("skipped");
+    });
+
+    it("пустой архив тоже отдаёт список: так видно, что в нём лежало", async () => {
+      const bytes = await makeZip({ "чертёж.dwg": "AC1015", "узел.dxf": "0\nSECTION" });
+      const result = await parseAttachment(bytes, "Чертежи.zip", null, 100_000, {
+        archiveCli: null,
+      });
+      expect(result.status).toBe("empty");
+      expect(result.archive?.skipped?.map((entry) => entry.name).sort()).toEqual([
+        "узел.dxf",
+        "чертёж.dwg",
+      ]);
+    });
+
+    it("вложенный архив даёт имена с путём внешнего", async () => {
+      const inner = new JSZip();
+      inner.file("Смета.txt", LONG_TEXT);
+      inner.file("Смета.gsfx", "<gsfx/>");
+      const innerBytes = await inner.generateAsync({ type: "uint8array" });
+      const outer = new JSZip();
+      outer.file("Раздел.zip", innerBytes);
+      const bytes = await outer.generateAsync({ type: "uint8array" });
+
+      const result = await parseAttachment(bytes, "ПД.zip", null, 100_000, {
+        archiveCli: null,
+      });
+
+      expect(result.status).toBe("parsed");
+      expect(result.archive?.skipped?.map((entry) => entry.name)).toEqual([
+        "Раздел.zip/Смета.gsfx",
+      ]);
+    });
+
+    it("вложенный архив, из которого ничего не вышло, раскрывается по входам", async () => {
+      const inner = new JSZip();
+      inner.file("Узел.dwg", "AC1015");
+      const innerBytes = await inner.generateAsync({ type: "uint8array" });
+      const outer = new JSZip();
+      outer.file("Раздел.zip", innerBytes);
+      outer.file("ТЗ.txt", LONG_TEXT);
+      const bytes = await outer.generateAsync({ type: "uint8array" });
+
+      const result = await parseAttachment(bytes, "ПД.zip", null, 100_000, {
+        archiveCli: null,
+      });
+
+      expect(result.archive).toMatchObject({ parsed: 1, total: 2 });
+      expect(result.archive?.skipped?.map((entry) => entry.name)).toEqual([
+        "Раздел.zip/Узел.dwg",
+      ]);
+    });
+
+    it("входы сверх лимита числа входов помечены как не читавшиеся", async () => {
+      const zip = new JSZip();
+      for (let i = 0; i < 205; i += 1)
+        zip.file(`f${String(i).padStart(3, "0")}.txt`, `${LONG_TEXT} ${i}`);
+      const bytes = await zip.generateAsync({ type: "uint8array" });
+
+      const result = await parseAttachment(bytes, "Много.zip", null, 10_000_000, {
+        archiveCli: null,
+      });
+
+      expect(result.archive?.total).toBe(205);
+      expect(result.archive?.parsed).toBe(200);
+      expect(result.archive?.skipped).toHaveLength(5);
+      expect(result.archive?.skipped?.[0]?.reason).toContain("больше 200 файлов");
+      expect(result.truncated).toBe(true);
+    });
+
+    it("список режется до 200 записей, а счётчики остаются полными", async () => {
+      const zip = new JSZip();
+      for (let i = 0; i < 199; i += 1) zip.file(`x${String(i).padStart(3, "0")}.dwg`, "AC1015");
+      zip.file("a.txt", LONG_TEXT);
+      // Ещё 150 непрочитанных (сверх лимита входов не доходим: 200 + 150 > 200).
+      for (let i = 0; i < 150; i += 1) zip.file(`z${String(i).padStart(3, "0")}.dwg`, "AC1015");
+      const bytes = await zip.generateAsync({ type: "uint8array" });
+
+      const result = await parseAttachment(bytes, "Чертежи.zip", null, 100_000, {
+        archiveCli: null,
+      });
+
+      expect(result.archive?.total).toBe(350);
+      expect(result.archive?.parsed).toBe(1);
+      expect(result.archive?.skipped).toHaveLength(200);
+    });
+
+    it("длинное имя режется слева: расширение остаётся", async () => {
+      const longName = `${"папка/".repeat(60)}Смета.gsfx`;
+      const zip = new JSZip();
+      zip.file(longName, "<gsfx/>");
+      zip.file("ТЗ.txt", LONG_TEXT);
+      const bytes = await zip.generateAsync({ type: "uint8array" });
+
+      const result = await parseAttachment(bytes, "Д.zip", null, 100_000, {
+        archiveCli: null,
+      });
+
+      const [entry] = result.archive?.skipped ?? [];
+      expect(entry?.name.length).toBe(200);
+      expect(entry?.name.startsWith("…")).toBe(true);
+      expect(entry?.name.endsWith("Смета.gsfx")).toBe(true);
+    });
   });
 });
 

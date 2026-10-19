@@ -36,7 +36,11 @@ import {
   pickTool,
   type ArchiveCli,
 } from "@/services/archiveCli";
-import type { SkippedCode } from "@/types/database";
+import type {
+  ArchiveReport,
+  ArchiveSkippedEntry,
+  SkippedCode,
+} from "@/types/database";
 import {
   odfContentToText,
   odfKindFromContent,
@@ -78,8 +82,11 @@ export interface ParsedAttachment {
   code?: SkippedCode;
   /** Текст обрезан по бюджету знаков — целиком файл в лимит не влез. */
   truncated: boolean;
-  /** Для архива: сколько входов разобрано из скольких. */
-  archive?: { parsed: number; total: number };
+  /**
+   * Для архива: сколько входов разобрано из скольких и какие не прочитаны
+   * (имя и причина). Каталоги в `total` и в `skipped` не входят.
+   */
+  archive?: ArchiveReport;
   /**
    * Текст распознан со скана, а не прочитан из текстового слоя.
    * `pages` — сколько страниц распознано, `totalPages` — сколько их в файле.
@@ -511,6 +518,41 @@ async function parseImage(
   );
 }
 
+/** Сколько пропущенных входов архива записывается в отчёт: список — выборка, а не журнал. */
+export const MAX_SKIPPED_ENTRIES = 200;
+/** Длина имени и причины в отчёте о пропусках. Имя режется с начала: расширение важнее пути. */
+const SKIPPED_NAME_CHARS = 200;
+const SKIPPED_REASON_CHARS = 160;
+
+/** Имя входа в отчёт: слишком длинное режется слева, чтобы расширение осталось видно. */
+function skippedName(name: string): string {
+  return name.length <= SKIPPED_NAME_CHARS
+    ? name
+    : `…${name.slice(name.length - (SKIPPED_NAME_CHARS - 1))}`;
+}
+
+function skippedReason(reason: string): string {
+  const flat = reason.replace(/\s+/g, " ").trim();
+  return flat.length <= SKIPPED_REASON_CHARS
+    ? flat
+    : `${flat.slice(0, SKIPPED_REASON_CHARS - 1)}…`;
+}
+
+/** Причина, по которой вход не стал текстом: своя, а когда её нет — по статусу. */
+function innerSkipReason(inner: ParsedAttachment): string {
+  if (inner.reason) return inner.reason;
+  switch (inner.status) {
+    case "unsupported":
+      return "формат не читается";
+    case "empty":
+      return "текста нет";
+    case "failed":
+      return "ошибка чтения";
+    default:
+      return "пустой текст";
+  }
+}
+
 /**
  * Обход входов архива, общий для zip, rar и 7z.
  *
@@ -541,10 +583,25 @@ async function readArchive(
   // Обход остановлен по объёму распакованного, а не по входам или знакам: такой
   // архив прочитан не целиком, и молчать об этом нельзя.
   let stoppedByVolume = false;
+  // Что не прочитано, с причиной: по одному счётчику нельзя понять, какие файлы
+  // теряются (родные файлы сметных программ, чертежи, сканы). Каталогов здесь
+  // нет — их не отдаёт ни один источник входов, поэтому `total` их не считает.
+  const skipped: ArchiveSkippedEntry[] = [];
+  const noteSkipped = (name: string, reason: string): void => {
+    skipped.push({ name: skippedName(name), reason: skippedReason(reason) });
+  };
+  /** Первый вход, до которого обход не дошёл, и причина остановки. */
+  let notVisitedFrom = sorted.length;
+  let notVisitedReason = "";
 
-  for (const entry of sorted.slice(0, limits.maxEntries)) {
+  const visited = sorted.slice(0, limits.maxEntries);
+  for (const [index, entry] of visited.entries()) {
     const name = entry.name;
-    if (used >= budgetChars) break;
+    if (used >= budgetChars) {
+      notVisitedFrom = index;
+      notVisitedReason = "не читался: бюджет знаков на архив исчерпан";
+      break;
+    }
 
     let inner: ParsedAttachment;
     if (entry.path !== undefined && entry.size >= LARGE_ARCHIVE_BYTES) {
@@ -553,6 +610,8 @@ async function readArchive(
       uncompressed += entry.size;
       if (uncompressed > limits.maxUncompressed) {
         stoppedByVolume = true;
+        notVisitedFrom = index;
+        notVisitedReason = "не читался: превышен предел распакованного объёма";
         break;
       }
       inner = await parseDiskPath(
@@ -567,6 +626,8 @@ async function readArchive(
       uncompressed += entryBytes.byteLength;
       if (uncompressed > limits.maxUncompressed) {
         stoppedByVolume = true;
+        notVisitedFrom = index;
+        notVisitedReason = "не читался: превышен предел распакованного объёма";
         break;
       }
       inner = await parseBytes(
@@ -580,7 +641,20 @@ async function readArchive(
     }
     // Прочитанный вход с диска не нужен: место освобождается сразу, а не в конце.
     await entry.release?.();
-    if (inner.status !== "parsed" || inner.text.length === 0) continue;
+    if (inner.status !== "parsed" || inner.text.length === 0) {
+      // Вложенный архив, из которого ничего не вышло, называет свои входы:
+      // «Раздел.zip/Смета.gsfx» говорит больше, чем «Раздел.zip: ни один не прочитан».
+      const nested = inner.archive?.skipped;
+      if (nested && nested.length > 0) {
+        for (const child of nested) noteSkipped(`${name}/${child.name}`, child.reason);
+      } else {
+        noteSkipped(name, innerSkipReason(inner));
+      }
+      continue;
+    }
+    for (const child of inner.archive?.skipped ?? []) {
+      noteSkipped(`${name}/${child.name}`, child.reason);
+    }
 
     parts.push(`=== ${name} ===\n${inner.text}`);
     used += inner.text.length;
@@ -593,6 +667,24 @@ async function readArchive(
 
   const skippedNames =
     names.length - Math.min(names.length, limits.maxEntries);
+  // Не дошли ни по остановке обхода, ни по числу входов: после реальных отказов,
+  // чтобы потолок списка отрезал их, а не причины настоящих потерь.
+  for (const entry of sorted.slice(notVisitedFrom, limits.maxEntries)) {
+    noteSkipped(entry.name, notVisitedReason);
+  }
+  for (const entry of sorted.slice(limits.maxEntries)) {
+    noteSkipped(
+      entry.name,
+      `не читался: в архиве больше ${limits.maxEntries} файлов`,
+    );
+  }
+  const report = (): ArchiveReport => ({
+    parsed: parsedCount,
+    total: names.length,
+    ...(skipped.length > 0
+      ? { skipped: skipped.slice(0, MAX_SKIPPED_ENTRIES) }
+      : {}),
+  });
   const text = parts.join("\n\n");
 
   if (text.trim().length < MIN_PARSED_CHARS) {
@@ -604,7 +696,7 @@ async function readArchive(
           ? "Архив пуст."
           : `В архиве ${names.length} ${pluralFiles(names.length)}, ни один не удалось прочитать.`,
       truncated: false,
-      archive: { parsed: parsedCount, total: names.length },
+      archive: report(),
     };
   }
 
@@ -617,7 +709,7 @@ async function readArchive(
       skippedNames > 0 ||
       used >= budgetChars ||
       stoppedByVolume,
-    archive: { parsed: parsedCount, total: names.length },
+    archive: report(),
     ...(ocrTotalPages > 0
       ? { ocr: { pages: ocrPages, totalPages: ocrTotalPages } }
       : {}),

@@ -29,6 +29,7 @@ import { summarizeCustomerConditions } from "@/domain/estimate/customerCoefficie
 import type { LsrSourceInfo } from "@/domain/estimate/customerLsrSet";
 import { deriveUnitDivisor } from "@/domain/estimate/billExtraction";
 import { baseUnitOf } from "@/domain/estimate/units";
+import { noVolumesGap } from "@/domain/estimate/noVolumes";
 import type {
   AppliedNormative,
   BillOfWorkItem,
@@ -262,6 +263,26 @@ export function unreadChunkGaps(chunks: readonly { readonly message: string }[])
     code: null,
     baseType: null,
   }));
+}
+
+/**
+ * Пробел «в документах нет объёмов»: ни одной позиции и ни одного источника объёмов. Смета при этом пуста, и
+ * человеку нужно сказать, что просмотрено и что делать, а не оставить ноль рублей без объяснения (`noVolumes.ts`).
+ */
+export function noVolumeGaps(
+  result: Pick<EstimateBuildResult, "billItems" | "volumeSource" | "documentsWithoutBill" | "skippedNoVolumes">,
+  documentCount: number,
+  unreadChunks: number,
+): EstimateGap[] {
+  if (result.billItems > 0 || result.volumeSource !== null) return [];
+  return [
+    noVolumesGap({
+      documentCount,
+      documentsWithoutBill: result.documentsWithoutBill,
+      skippedNoVolumes: result.skippedNoVolumes ?? [],
+      unreadChunks,
+    }),
+  ];
 }
 
 function withGaps(result: EstimateBuildResult, gaps: readonly EstimateGap[]): EstimateBuildResult {
@@ -904,6 +925,7 @@ async function buildResourceFromDocuments(
     ...priceLevelGaps(input.documents, { priceZone: base.priceBook.priceZone, period: base.priceBook.period }, input.priceZoneChoice?.notes),
     ...customerBaseGaps(extraction.customerLsrs),
     ...unreadChunkGaps(extraction.unreadChunks),
+    ...noVolumeGaps(result, input.documents.length, extraction.unreadChunks.length),
   ]);
 }
 
@@ -1150,6 +1172,7 @@ async function buildBimFromDocuments(
   return withGaps(result, [
     ...priceLevelGaps(input.documents, { priceZone: ourZone, period: ourPeriod }, input.priceZoneChoice?.notes),
     ...unreadChunkGaps(extraction.unreadChunks),
+    ...noVolumeGaps(result, input.documents.length, extraction.unreadChunks.length),
   ]);
 }
 

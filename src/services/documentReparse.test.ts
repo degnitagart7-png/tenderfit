@@ -67,7 +67,21 @@ function setup(options: Setup = {}) {
   const log: string[] = [];
   const listUnreadable = vi.fn(
     async (opts: { reasonLike: readonly string[]; tenderId?: string }) =>
-      rows.filter((row) => !opts.tenderId || row.tenderId === opts.tenderId),
+      // Как настоящий порт: только непрочитанные.
+      rows.filter(
+        (row) =>
+          row.parsedStatus !== "parsed" &&
+          (!opts.tenderId || row.tenderId === opts.tenderId),
+      ),
+  );
+
+  // Как настоящий порт: parsed-строки со ссылкой; частичность проверяет код.
+  const listPartialArchives = vi.fn(async (opts: { tenderId?: string }) =>
+    rows.filter(
+      (row) =>
+        row.parsedStatus === "parsed" &&
+        (!opts.tenderId || row.tenderId === opts.tenderId),
+    ),
   );
 
   const parse: ReparseDeps["parse"] =
@@ -78,6 +92,7 @@ function setup(options: Setup = {}) {
   const deps: ReparseDeps = {
     store: {
       listUnreadable,
+      listPartialArchives,
       listTender: async (tenderId) =>
         rows.filter((row) => row.tenderId === tenderId),
       save: async (regNumber, document) => {
@@ -113,7 +128,7 @@ function setup(options: Setup = {}) {
     ocrAvailable: async () => options.ocr ?? false,
     log: (line) => log.push(line),
   };
-  return { deps, saved, fetched, limits, log, listUnreadable };
+  return { deps, saved, fetched, limits, log, listUnreadable, listPartialArchives };
 }
 
 const FORMAT_REASON = (ext: string) =>
@@ -294,6 +309,7 @@ describe("reparseUnreadable — отбор строк", () => {
     expect(report.candidates).toBe(5);
     expect(report.tenders).toBe(2);
     expect(report.byCategory).toEqual({
+      archive_partial: 0,
       format: 3,
       scan: 1,
       module: 0,
@@ -952,6 +968,176 @@ describe("reparseUnreadable — тома", () => {
   });
 });
 
+describe("reparseUnreadable — архивы, прочитанные частично", () => {
+  const ARCHIVE = "Документация о закупке.zip";
+
+  /** Архив из трёх читаемых файлов и одного нечитаемого. */
+  async function makeArchive(): Promise<Uint8Array> {
+    const zip = new JSZip();
+    zip.file("ТЗ.txt", "Техническое задание: срок поставки 30 календарных дней.");
+    zip.file("Смета.txt", "Локальная смета: штукатурка стен, 120 квадратных метров.");
+    zip.file("График.txt", "График выполнения работ: начало 01.03, окончание 30.04.");
+    zip.file("Узел.dwg", "AC1015");
+    return zip.generateAsync({ type: "uint8array" });
+  }
+
+  const partialRow = (overrides: Partial<ReparseDoc> = {}): ReparseDoc =>
+    doc({
+      filename: ARCHIVE,
+      parsedStatus: "parsed",
+      reason: null,
+      skipCode: null,
+      chars: 40,
+      archive: { parsed: 1, total: 4, listed: false },
+      ...overrides,
+    });
+
+  it("отбирает parsed-архив с parsed < total без списка пропусков", async () => {
+    const { deps, listUnreadable, listPartialArchives } = setup({
+      rows: [
+        partialRow(),
+        // Прочитан целиком.
+        partialRow({ filename: "Целиком.zip", archive: { parsed: 3, total: 3, listed: false } }),
+        // Уже перечитан нынешним разбором: честно непрочитанные входы названы.
+        partialRow({ filename: "Перечитан.zip", archive: { parsed: 1, total: 4, listed: true } }),
+        // Не архив.
+        partialRow({ filename: "Обычный.docx", archive: null }),
+        // Нет ссылки.
+        partialRow({ filename: "Без ссылки.zip", fileUrl: null }),
+      ],
+    });
+
+    const report = await reparseUnreadable(deps, { dryRun: true });
+
+    expect(listUnreadable).toHaveBeenCalledTimes(1);
+    expect(listPartialArchives).toHaveBeenCalledTimes(1);
+    expect(report.candidates).toBe(1);
+    expect(report.byCategory.archive_partial).toBe(1);
+  });
+
+  it("dry-run печатает старое «прочитано из»", async () => {
+    const { deps, log, fetched } = setup({ rows: [partialRow()] });
+
+    await reparseUnreadable(deps, { dryRun: true });
+
+    expect(fetched).toEqual([]);
+    expect(log.join("\n")).toContain("[archive_partial]");
+    expect(log.join("\n")).toContain("прочитано 1 из 4 файлов архива");
+  });
+
+  it("--only archive_partial не запрашивает нечитаемые, а --only format — архивы", async () => {
+    const a = setup({ rows: [partialRow()] });
+    await reparseUnreadable(a.deps, { dryRun: true, only: "archive_partial" });
+    expect(a.listUnreadable).not.toHaveBeenCalled();
+    expect(a.listPartialArchives).toHaveBeenCalled();
+
+    const b = setup({
+      rows: [partialRow(), doc({ filename: "Письмо.rtf", reason: FORMAT_REASON("rtf") })],
+    });
+    const report = await reparseUnreadable(b.deps, { dryRun: true, only: "format" });
+    expect(b.listPartialArchives).not.toHaveBeenCalled();
+    expect(report.candidates).toBe(1);
+    expect(report.byCategory.archive_partial).toBe(0);
+  });
+
+  it("заменяет строку, когда прочитано больше входов, и список пропусков уходит в запись", async () => {
+    const { deps, saved, fetched, log } = setup({
+      rows: [partialRow()],
+      files: { [ARCHIVE]: await makeArchive() },
+    });
+
+    const report = await reparseUnreadable(deps, { dryRun: false });
+
+    expect(fetched).toEqual([ARCHIVE]);
+    expect(saved).toHaveLength(1);
+    const { document } = saved[0]!;
+    expect(document.filename).toBe(ARCHIVE);
+    expect(document.skipped).toBeNull();
+    expect(document.archive).toMatchObject({ parsed: 3, total: 4 });
+    expect(document.archive?.skipped?.map((entry) => entry.name)).toEqual(["Узел.dwg"]);
+    expect(report.improved).toBe(1);
+    expect(report.notImproved).toBe(0);
+    expect(report.recovered).toBe(0);
+    expect(log.join("\n")).toContain("входов было 1 из 4, стало 3 из 4");
+  });
+
+  it("не заменяет, когда новый результат не лучше прежнего", async () => {
+    // Старая строка уже читает 3 из 4 и содержит больше текста, чем даст файл.
+    const { deps, saved, log } = setup({
+      rows: [partialRow({ chars: 1_000_000, archive: { parsed: 3, total: 4, listed: false } })],
+      files: { [ARCHIVE]: await makeArchive() },
+    });
+
+    const report = await reparseUnreadable(deps, { dryRun: false });
+
+    expect(saved).toEqual([]);
+    expect(report.improved).toBe(0);
+    expect(report.notImproved).toBe(1);
+    expect(log.join("\n")).toContain("не лучше прежнего");
+  });
+
+  it("сбой скачивания не стирает прежний текст", async () => {
+    // Файла нет в заглушке порта: чтение даёт строку пропуска download_failed.
+    const { deps, saved, log } = setup({ rows: [partialRow()], files: {} });
+
+    const report = await reparseUnreadable(deps, { dryRun: false });
+
+    expect(saved).toEqual([]);
+    expect(report.notImproved).toBe(1);
+    expect(log.join("\n")).toContain("не лучше прежнего");
+  });
+
+  it("прежний текст строки не занимает бюджет сам у себя", async () => {
+    // Бюджет 400 знаков, строка занимает 300: остаток для замены — 400, а не 100.
+    const { deps, saved } = setup({
+      rows: [partialRow({ chars: 300 })],
+      files: { [ARCHIVE]: await makeArchive() },
+    });
+
+    const report = await reparseUnreadable(deps, { dryRun: false, budgetChars: 400 });
+
+    expect(report.improved).toBe(1);
+    expect(saved[0]?.document.archive?.parsed).toBe(3);
+  });
+
+  it("многотомный комплект перечитывается целиком, хотя первый том уже parsed", async () => {
+    const zip = new JSZip();
+    zip.file("Проект контракта.txt", "Проект контракта: срок поставки 30 календарных дней.");
+    zip.file("Спецификация.txt", "Спецификация: радиаторы биметаллические, 120 штук.");
+    zip.file("Смета.txt", "Локальная смета: штукатурка стен, 120 квадратных метров.");
+    const bytes = await zip.generateAsync({ type: "uint8array" });
+    const half = Math.ceil(bytes.length / 2);
+    const files: Record<string, Uint8Array> = {
+      "СД.zip.001": bytes.subarray(0, half),
+      "СД.zip.002": bytes.subarray(half),
+    };
+    const { deps, saved, fetched } = setup({
+      rows: [
+        partialRow({
+          filename: "СД.zip.001",
+          chars: 50,
+          archive: { parsed: 1, total: 3, listed: false },
+        }),
+        doc({
+          filename: "СД.zip.002",
+          reason: "Том комплекта: прочитан вместе с «СД.zip.001».",
+          skipCode: "volume_of_set",
+        }),
+      ],
+      files,
+    });
+
+    const report = await reparseUnreadable(deps, { dryRun: false });
+
+    expect(fetched.sort()).toEqual(["СД.zip.001", "СД.zip.002"]);
+    expect(saved).toHaveLength(2);
+    expect(saved[0]?.document.archive).toMatchObject({ parsed: 3, total: 3 });
+    expect(saved[1]?.document.skipped?.code).toBe("volume_of_set");
+    expect(report.improved).toBe(1);
+    expect(report.skippedSets).toBe(0);
+  });
+});
+
 describe("parseReparseArgs", () => {
   it("разбирает флаги", () => {
     expect(
@@ -969,6 +1155,9 @@ describe("parseReparseArgs", () => {
       tenderId: "0134300025826000377",
     });
     expect(parseReparseArgs([])).toEqual({ dryRun: false, help: false });
+    expect(parseReparseArgs(["--only", "archive_partial"]).only).toBe(
+      "archive_partial",
+    );
     expect(parseReparseArgs(["--help"]).help).toBe(true);
   });
 
@@ -977,5 +1166,7 @@ describe("parseReparseArgs", () => {
     expect(() => parseReparseArgs(["--limit", "0"])).toThrow();
     expect(() => parseReparseArgs(["--tender"])).toThrow();
     expect(() => parseReparseArgs(["--force"])).toThrow(/Неизвестный/);
+    expect(() => parseReparseArgs(["--only"])).toThrow(/--only/);
+    expect(() => parseReparseArgs(["--only", "всё"])).toThrow(/--only/);
   });
 });

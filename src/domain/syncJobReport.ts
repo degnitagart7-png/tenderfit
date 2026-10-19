@@ -58,6 +58,7 @@ export function describeSyncJobReport(report: SyncJobReport | null): string {
       `позиций ${estimate.billItems}`,
       `токенов ${estimate.tokensUsed}`,
     ];
+    if (estimate.billItems === 0 && !estimate.volumeSource) parts.push("объёмов в документах не найдено");
     if (estimate.volumeSource) {
       const label = { BILL: "ведомость", CUSTOMER_ESTIMATE: "смета заказчика", CONTRACT_ESTIMATE: "смета контракта", SPEC: "ТЗ и проект" }[estimate.volumeSource.level];
       parts.push(`объёмы: ${label}`);

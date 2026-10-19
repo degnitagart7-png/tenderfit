@@ -74,6 +74,7 @@ const estimateGapKindSchema = z.enum([
   "PRICE_LEVEL_DIFFERS",
   "CUSTOMER_BASE_DIFFERS",
   "BILL_CHUNK_UNREAD",
+  "NO_VOLUME_SOURCE",
 ]);
 
 const estimateGapSchema = z.object({

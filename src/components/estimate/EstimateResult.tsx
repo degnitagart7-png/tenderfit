@@ -41,6 +41,7 @@ import { LocalEstimateFormView } from "@/components/estimate/LocalEstimateFormVi
 import type { EstimateBillSnapshot } from "@/domain/estimate/billReview";
 import { describePriceZoneBasis } from "@/domain/estimate/priceZoneResolve";
 import type { CustomerEstimate } from "@/domain/estimate/customerEstimate";
+import { noVolumesNoticeFor } from "@/domain/estimate/noVolumes";
 
 /**
  * Результат расчёта сметы: итоги, честность расчёта и выгрузки.
@@ -63,6 +64,8 @@ export interface EstimateResultData {
   readonly document: EstimateDocument;
   readonly rejected: readonly RejectedBillRow[];
   readonly documentsWithoutBill: readonly string[];
+  /** Документы и файлы архивов, которые модель не читала как не содержащие объёмов. */
+  readonly skippedNoVolumes?: readonly { readonly name: string }[];
   readonly billItems: number;
   /**
    * Откуда взяты объёмы расчёта. Нет у расчётов, посчитанных до приоритета
@@ -136,6 +139,8 @@ export function EstimateResult({
   const assurance = computeAssurance(document, { volumeSource: data.volumeSource ?? null });
   const confidence = computeEstimateConfidence({ document, volumeSource: data.volumeSource ?? null, customerLsrs });
   const dropped = droppingGaps(document);
+  // Ни позиций, ни источника объёмов: смета пуста не из-за сбоя, а потому что в документах нет объёмов.
+  const noVolumes = noVolumesNoticeFor(data);
   const generatedAt = new Date(document.generatedAt);
 
   const download = (bytes: BlobPart, fileName: string, type: string): void => {
@@ -212,6 +217,19 @@ export function EstimateResult({
 
   return (
     <div className="space-y-2">
+      {noVolumes !== null && (
+        <div
+          role="status"
+          data-testid="no-volumes"
+          className="rounded-md border border-mustard-line bg-mustard-subtle px-4 py-3 text-mustard-fg"
+        >
+          <p className="text-[15px] font-semibold">{noVolumes.title}</p>
+          <p className="mt-1 text-[14px]">{noVolumes.found}</p>
+          {noVolumes.action !== "" && <p className="mt-2 text-[14px] font-medium">{noVolumes.action}</p>}
+          <p className="mt-2 text-[13px]">Сумма ниже — не оценка объекта: без объёмов расчёту нечего считать.</p>
+        </div>
+      )}
+
       {/* Итог: одна цифра и то, на чём она держится. Всё остальное — в разделах ниже. */}
       <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-4">
         <div className="min-w-0">

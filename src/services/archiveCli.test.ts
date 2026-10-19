@@ -494,7 +494,10 @@ describe("zip с сотнями входов: пределы зависят от
     const result = await parseAttachment(await zipWith(250), "Док.zip", null, Number.POSITIVE_INFINITY, {
       archiveCli: null,
     });
-    expect(result.archive).toEqual({ parsed: MAX_ARCHIVE_ENTRIES, total: 250 });
+    expect(result.archive).toMatchObject({ parsed: MAX_ARCHIVE_ENTRIES, total: 250 });
+    // Пятьдесят входов сверх предела названы в отчёте, а не просто пропали.
+    expect(result.archive?.skipped).toHaveLength(50);
+    expect(result.archive?.skipped?.[0]?.reason).toContain(`больше ${MAX_ARCHIVE_ENTRIES} файлов`);
     expect(result.truncated).toBe(true);
   });
 

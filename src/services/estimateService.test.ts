@@ -121,6 +121,69 @@ describe("buildEstimateFromDocuments", () => {
     expect(result.document.sections[0]?.title).toBe("ВОР.docx");
   });
 
+  describe("документы без объёмов", () => {
+    /** Модель прочитала документ и ведомости в нём не нашла. */
+    const noBillFetcher: BillRowsFetcher = async () => ({
+      rows: [],
+      hasBill: false,
+      tokens: 10,
+      malformed: 0,
+      truncated: false,
+    });
+
+    const spec = {
+      name: "Техническое задание.docx",
+      text: "Техническое задание на выполнение работ по реконструкции колодцев. Работы выполнить в соответствии с проектом.",
+    };
+
+    it("пустая смета несёт пробел с тем, что просмотрено и что делать", async () => {
+      const result = await buildEstimateFromDocuments(
+        {
+          regNumber: "32616404800",
+          subject: "Реконструкция запорных колодцев",
+          documents: [spec],
+          parameters: makeParameters(),
+          now: new Date("2026-09-28T00:00:00.000Z"),
+        },
+        { base: makeBase(), fetcher: noBillFetcher },
+      );
+
+      expect(result.billItems).toBe(0);
+      expect(result.volumeSource).toBeNull();
+      const gap = result.document.gaps.find((item) => item.kind === "NO_VOLUME_SOURCE");
+      expect(gap).toBeDefined();
+      expect(gap?.message).toContain("Просмотрено 1 документ.");
+      expect(gap?.message).toContain("«Техническое задание.docx»");
+      expect(gap?.message).toContain("ВОР, дефектную ведомость или смету заказчика");
+      expect(gap?.message).toContain(".gsfx");
+      // Документ с таким пробелом проходит схему, по которой сметы читаются из базы.
+      expect(() => parseEstimateDocument(JSON.parse(JSON.stringify(result.document)))).not.toThrow();
+    });
+
+    it("смета с позициями пробела не получает", async () => {
+      const result = await run([
+        {
+          work_name: "Разработка грунта в отвал экскаваторами",
+          quantity: "1,2405",
+          unit: "1000 м3",
+          evidence_quote: "Разработка грунта в отвал экскаваторами | 1000 м3 | 1,2405",
+        },
+      ]);
+
+      expect(result.document.gaps.some((item) => item.kind === "NO_VOLUME_SOURCE")).toBe(false);
+    });
+
+    it("все строки модели отвергнуты проверкой цитат — подтверждённых объёмов нет, пробел есть, отказы названы отдельно", async () => {
+      const result = await run([
+        { work_name: "Монтаж металлоконструкций", quantity: "42", unit: "т", evidence_quote: "Монтаж металлоконструкций | т | 42" },
+      ]);
+
+      expect(result.billItems).toBe(0);
+      expect(result.rejected[0]?.reason).toBe("QUOTE_NOT_FOUND");
+      expect(result.document.gaps.some((item) => item.kind === "NO_VOLUME_SOURCE")).toBe(true);
+    });
+  });
+
   it("неподтверждённую строку в смету не пускает", async () => {
     const result = await run([
       {

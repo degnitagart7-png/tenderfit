@@ -447,6 +447,64 @@ describe("documentRepository", () => {
     });
   });
 
+  it("saveParsed пишет пропущенные входы архива и чистит их имена для jsonb", async () => {
+    mockSequence(
+      { data: null, error: NOT_FOUND },
+      { data: { id: "doc-new" }, error: null },
+    );
+
+    const { documentRepository } = await import("./documentRepository");
+    await documentRepository.saveParsed({
+      tender_id: "0338100003326000032",
+      filename: "Документация.zip",
+      document_type: "attachment",
+      source_type: "eis_api",
+      parsed_text: "ы".repeat(1000),
+      content_hash: "a".repeat(64),
+      archive: {
+        parsed: 1,
+        total: 3,
+        skipped: [
+          { name: "Смета\u0000.gsfx", reason: "формат gsfx не разбирается" },
+          { name: "Чертёж.dwg", reason: "формат dwg не разбирается" },
+        ],
+      },
+    });
+
+    const inserted = argsOf("insert")[0] as Record<string, unknown>;
+    expect(inserted["raw_json"]).toEqual({
+      archive: {
+        parsed: 1,
+        total: 3,
+        skipped: [
+          { name: "Смета.gsfx", reason: "формат gsfx не разбирается" },
+          { name: "Чертёж.dwg", reason: "формат dwg не разбирается" },
+        ],
+      },
+    });
+  });
+
+  it("saveParsed не пишет пустой список пропусков архива", async () => {
+    mockSequence(
+      { data: null, error: NOT_FOUND },
+      { data: { id: "doc-new" }, error: null },
+    );
+
+    const { documentRepository } = await import("./documentRepository");
+    await documentRepository.saveParsed({
+      tender_id: "0338100003326000032",
+      filename: "Документация.zip",
+      document_type: "attachment",
+      source_type: "eis_api",
+      parsed_text: "ы".repeat(1000),
+      content_hash: "a".repeat(64),
+      archive: { parsed: 3, total: 3, skipped: [] },
+    });
+
+    const inserted = argsOf("insert")[0] as Record<string, unknown>;
+    expect(inserted["raw_json"]).toEqual({ archive: { parsed: 3, total: 3 } });
+  });
+
   it("saveParsed не пишет признак обрезки, когда текст дошёл целиком", async () => {
     mockSequence(
       { data: null, error: NOT_FOUND },
@@ -704,6 +762,42 @@ describe("documentRepository", () => {
 
     expect(argsOf("eq")).toEqual(["tender_id", "0134300025826000377"]);
   });
+  it("listParsedArchives берёт прочитанные архивы по имени, без parsed_text", async () => {
+    mockData([
+      {
+        tender_id: "A",
+        id: "1",
+        filename: "Документация.zip",
+        document_type: "attachment",
+        source_type: "eis_api",
+        file_url: "https://zakupki.gov.ru/44fz/filestore/1",
+        parsed_status: "parsed",
+        download_status: "downloaded",
+        content_hash: "h",
+        file_size: 10,
+        error_message: null,
+        created_at: "2026-09-27T10:00:00Z",
+        updated_at: "2026-09-27T10:00:00Z",
+        raw_json: { chars: 40, archive: { parsed: 5, total: 59 } },
+      },
+    ]);
+
+    const { documentRepository } = await import("./documentRepository");
+    const result = await documentRepository.listParsedArchives({
+      tenderId: "A",
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.raw_json?.archive).toEqual({ parsed: 5, total: 59 });
+    expect(argsOf("eq")).toEqual(["parsed_status", "parsed"]);
+    expect(argsOf("not")).toEqual(["file_url", "is", null]);
+    expect(String(argsOf("or")[0])).toBe(
+      "filename.ilike.*.zip,filename.ilike.*.rar,filename.ilike.*.7z,filename.ilike.*.001,filename.ilike.*.part*.rar",
+    );
+    // Тексты документов не читаются: на больших текстах прод упирался в таймаут.
+    expect(String(argsOf("select")[0])).not.toContain("parsed_text");
+  });
+
   it("saveParsed вычищает нулевой символ и одиночные суррогаты: Postgres их не принимает", async () => {
     mockSequence(
       { data: null, error: NOT_FOUND },

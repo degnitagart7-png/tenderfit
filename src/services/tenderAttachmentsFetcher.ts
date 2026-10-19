@@ -23,7 +23,11 @@ import {
   type StoredDocumentType,
   type StoredSourceType,
 } from "@/services/tenderDocumentsFetcher";
-import type { DocumentSkipMark, SkippedCode } from "@/types/database";
+import type {
+  ArchiveReport,
+  DocumentSkipMark,
+  SkippedCode,
+} from "@/types/database";
 
 /**
  * Обход вкладки документов ЕИС: какие файлы скачать, в каком порядке и когда
@@ -214,7 +218,7 @@ export interface FetchedAttachment extends FetchedTenderDocument {
   /** Текст обрезан по бюджету: целиком файл в лимит не влез. */
   truncated: boolean;
   /** Для архива: прочитано входов из скольких. null — файл не архив. */
-  archive: { parsed: number; total: number } | null;
+  archive: ArchiveReport | null;
   /**
    * Текст распознан со скана: сколько страниц распознано из скольких.
    * null — текст прочитан из файла, а не распознан.

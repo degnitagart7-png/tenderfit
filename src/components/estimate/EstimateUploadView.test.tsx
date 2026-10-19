@@ -93,3 +93,27 @@ describe("EstimateUploadView — регион расчёта", () => {
     expect(screen.getByTestId("estimate-method")).toBeTruthy();
   });
 });
+
+describe("EstimateUploadView — форматы файлов", () => {
+  it("выбор файла предлагает всё, что читает браузерный разбор, и не предлагает архивы и картинки", async () => {
+    render(<EstimateUploadView />);
+
+    const input = (await screen.findByTestId("estimate-files")) as HTMLInputElement;
+    const accepted = input.accept.split(",");
+    for (const extension of [".pdf", ".docx", ".xlsx", ".xls", ".xlsm", ".ods", ".odt", ".rtf", ".csv", ".txt"]) {
+      expect(accepted).toContain(extension);
+    }
+    // Эти форматы читает только серверный разбор: в браузере они вернули бы «Неподдерживаемый формат».
+    for (const extension of [".zip", ".rar", ".7z", ".png", ".jpg", ".tif", ".gsfx"]) {
+      expect(accepted).not.toContain(extension);
+    }
+  });
+
+  it("подсказка называет форматы и честно говорит, что архивы и родные файлы смет не читаются", async () => {
+    render(<EstimateUploadView />);
+
+    expect(await screen.findByText(/OpenDocument \(odt, ods\), RTF/)).toBeTruthy();
+    expect(screen.getByText(/Архивы \(zip, rar, 7z\) и сканы-картинки здесь не читаются/)).toBeTruthy();
+    expect(screen.getByText(/\.gsfx, \.xml/)).toBeTruthy();
+  });
+});

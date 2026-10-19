@@ -387,3 +387,30 @@ describe("EstimateResult: ценовая зона и основание выбо
     expect(screen.getByTestId("price-level").textContent).toBe(`Цены: ${DOCUMENT.priceZone}, ${DOCUMENT.period} — ${caption}`);
   });
 });
+
+describe("EstimateResult — документы без объёмов", () => {
+  const EMPTY = build([]);
+
+  it("пустая смета открывается плашкой: что найдено и что делать", () => {
+    render(
+      <EstimateResult
+        data={data({ document: EMPTY, billItems: 0, volumeSource: null, documentsWithoutBill: ["ТЗ.docx"] })}
+        regNumber="0100000000000000001"
+      />,
+    );
+
+    const notice = screen.getByTestId("no-volumes");
+    expect(notice.textContent).toContain("Объёмов работ для расчёта не нашлось");
+    expect(notice.textContent).toContain("нет ведомости объёмов, сметы заказчика и таблиц с количествами");
+    expect(notice.textContent).toContain("«ТЗ.docx»");
+    expect(notice.textContent).toContain("Загрузите ВОР");
+    expect(notice.textContent).toContain("странице «Смета»");
+    expect(notice.textContent).toContain(".gsfx");
+  });
+
+  it("у обычной сметы плашки нет", () => {
+    render(<EstimateResult data={data({ volumeSource: { level: "BILL", note: "", documents: ["ВОР.docx"] } })} regNumber="0100000000000000001" />);
+
+    expect(screen.queryByTestId("no-volumes")).toBeNull();
+  });
+});
