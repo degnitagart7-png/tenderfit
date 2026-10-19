@@ -1143,7 +1143,10 @@ export function parseCustomerLsr(documents: readonly DocumentText[]): CustomerLs
       // Служебные листы Smeta.RU (`Source`, `EtalonRes`…) — дамп базы программы: не смета и не «не распознанная» смета.
       if (isSmetaRuServiceSheet(estimate.estimateName)) continue;
       const smeta = detectSmetaRu(segment.text);
-      const tsn = smeta !== null && isTsnFormHead(segment.text.slice(0, 8_000));
+      // Форма № 4б ТСН-2001 узнаётся по самой шапке (ТСН-2001 и «Шифр расценки»), а не по программе: ту же
+      // 11-графную форму выгружают не только из Smeta.RU. Закупка 32616405004 (КДЦ «Арктика», 20.10.2026): четыре
+      // ЛСР по ТСН-2001 без признаков Smeta.RU не читались совсем — «нет строки нумерации граф 1–12».
+      const tsn = isTsnFormHead(segment.text.slice(0, 8_000));
       const parsed = tsn ? parseTsnSegment(segment.text) : parseSegment(segment.text);
       if (parsed.kind === "no") {
         notRecognized.push({ documentName: estimate.documentName, estimateName: estimate.estimateName, reason: parsed.reason });
