@@ -10,24 +10,12 @@ beforeEach(() => me.mockResolvedValue(guest));
 afterEach(cleanup);
 
 describe("BillingView — оплата и тарифы", () => {
-  it("три пакета; выбран «Расчёт», к оплате первый месяц 9 000 ₽, далее 39 000 ₽ в месяц", () => {
+  it("три пакета; выбран «Расчёт», к оплате 39 000 ₽", () => {
     render(<BillingView />);
 
     expect(screen.getAllByRole("radio")).toHaveLength(3);
     expect(screen.getByRole("radio", { name: /^Пакет «Расчёт»/ }).getAttribute("aria-checked")).toBe("true");
-    expect(screen.getByTestId("total").textContent).toBe("9 000 ₽");
-    expect(screen.getByTestId("then-price").textContent).toBe("далее 39 000 ₽ в месяц");
-  });
-
-  it("карточка «Расчёта» показывает вводную цену и обычную", () => {
-    render(<BillingView />);
-    const card = screen.getByRole("radio", { name: /^Пакет «Расчёт»/ });
-
-    expect(card.getAttribute("aria-label")).toBe("Пакет «Расчёт», первый месяц 9 000 ₽, далее 39 000 ₽ в месяц");
-    expect(card.textContent).toContain("первый месяц");
-    expect(card.textContent).toContain("далее 39 000 ₽ в месяц");
-    // У «Старта» вводной цены нет.
-    expect(screen.getByRole("radio", { name: /^Пакет «Старт»/ }).textContent).not.toContain("первый месяц");
+    expect(screen.getByTestId("total").textContent).toBe("39 000 ₽");
   });
 
   it("выбор другого пакета меняет заказ и ссылку на счёт", async () => {
@@ -35,7 +23,6 @@ describe("BillingView — оплата и тарифы", () => {
     fireEvent.click(screen.getByRole("radio", { name: /^Пакет «Старт»/ }));
 
     expect(screen.getByTestId("total").textContent).toBe("9 000 ₽");
-    expect(screen.queryByTestId("then-price")).toBeNull();
     const link = (await screen.findByRole("link", { name: "Запросить счёт" })) as HTMLAnchorElement;
     const params = new URLSearchParams(link.href.split("?")[1]);
     expect(params.get("subject")).toBe("Счёт на оплату — пакет «Старт»");

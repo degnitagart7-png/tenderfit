@@ -14,8 +14,6 @@ export interface Plan {
   tagline: string;
   /** Рублей в месяц; null — по запросу. */
   priceRub: number | null;
-  /** Вводная цена первого месяца, ₽; нет поля — первый месяц стоит как обычный. */
-  firstMonthRub?: number;
   features: readonly string[];
 }
 
@@ -37,7 +35,6 @@ export const PLANS: readonly Plan[] = [
     name: "Расчёт",
     tagline: "Всё из «Старта» и работа со сметой: считаем и проверяем",
     priceRub: 39_000,
-    firstMonthRub: 9_000,
     features: [
       "Всё из пакета «Старт»",
       "Расчёт сметы по закупке",
@@ -61,20 +58,10 @@ export function planById(id: string): Plan | undefined {
   return PLANS.find((plan) => plan.id === id);
 }
 
-function formatRub(amount: number): string {
-  return `${amount.toLocaleString("ru-RU").replace(/\s/g, " ")} ₽`;
-}
-
 /** «9 000 ₽» или «по запросу». Пробел — неразрывный, чтобы число не рвалось на строки. */
 export function formatPlanPrice(plan: Plan): string {
   if (plan.priceRub === null) return "по запросу";
-  return formatRub(plan.priceRub);
-}
-
-/** Вводная цена первого месяца («9 000 ₽») или null, если её у пакета нет. */
-export function formatFirstMonthPrice(plan: Plan): string | null {
-  if (plan.firstMonthRub === undefined || plan.priceRub === null) return null;
-  return formatRub(plan.firstMonthRub);
+  return `${plan.priceRub.toLocaleString("ru-RU").replace(/\s/g, " ")} ₽`;
 }
 
 /**
@@ -89,16 +76,12 @@ export function invoiceRequestHref(plan: Plan, accountEmail: string | null): str
   const subject = priced
     ? `Счёт на оплату — пакет «${plan.name}»`
     : `Условия пакета «${plan.name}»`;
-  const firstMonth = formatFirstMonthPrice(plan);
-  const request = !priced
-    ? `Хочу обсудить условия пакета «${plan.name}».`
-    : firstMonth
-      ? `Прошу выставить счёт на оплату: пакет «${plan.name}», первый месяц — ${firstMonth} (далее ${formatPlanPrice(plan)} в месяц).`
-      : `Прошу выставить счёт на оплату: пакет «${plan.name}», ${formatPlanPrice(plan)} в месяц.`;
   const body = [
     "Здравствуйте!",
     "",
-    request,
+    priced
+      ? `Прошу выставить счёт на оплату: пакет «${plan.name}», ${formatPlanPrice(plan)} в месяц.`
+      : `Хочу обсудить условия пакета «${plan.name}».`,
     "",
     "Компания:",
     "ИНН:",
