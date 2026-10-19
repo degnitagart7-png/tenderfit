@@ -32,4 +32,14 @@ describe("ТСН-2001 (Форма № 4б) из любой программы", 
     expect(positions[0]?.quantity).toBe(32);
     expect(positions.find((position) => position.quantity === 145.8)).toBeDefined();
   });
+
+  it("«0,049⏎(2*1,96+1*0,98) / 100» — это 0,049, а не 49: формула решает, чем была запятая", () => {
+    const row = '296,4.8-159-1,"Прокладка металлического короба",100 м,"0,049\n(2*1,96+1*0,98) / 100","2,448.57",,,,,,';
+    const withRow = text.replace(/\n,,ЗП,/, `\n${row}\n,,ЗП,`);
+    const parsed = parseCustomerLsr([{ name: "2026-07-03_Сметы__2_.zip", text: withRow } as never]);
+    const quantities = (parsed.estimates[0]?.positions ?? []).map((position) => position.quantity);
+    expect(quantities).toContain(0.049);
+    expect(quantities).not.toContain(49);
+  });
 });
+

@@ -432,15 +432,91 @@ function numberAt(grid: Grid, graph: number): number | null {
  */
 function quantityAt(grid: Grid, graph: number): number | null {
   const raw = grid.cells[grid.columns[graph] as number] ?? "";
-  const firstLine = (raw.split(/\r?\n/)[0] ?? "").replace(/\s+/g, " ").trim();
+  const lines = raw.split(/\r?\n/).map((line) => line.replace(/\s+/g, " ").trim()).filter((line) => line !== "");
+  const firstLine = lines[0] ?? "";
+  const formula = lines.length > 1 ? evaluateQuantityFormula(lines.slice(1).join(" ")) : null;
   if (firstLine !== "") {
-    const value = parseNumberCell(firstLine, grid.delimiter);
-    if (value !== null) return value;
+    const parsed = parseNumberCell(firstLine, grid.delimiter);
+    const decimal = decimalCommaNumber(firstLine);
+    // Запятая неоднозначна: в той же смете цены пишутся «2,448.57» (тысячи), а объёмы «0,049» (дробь).
+    // Закупка 32616405004: «0,049⏎(2*1,96+1*0,98) / 100» читалось как 49 — в 1000 раз больше, +3,98 млн ₽.
+    // Формула под числом решает спор; без неё «0,…» — всегда дробь (тысячи с нулём впереди не пишут).
+    if (formula !== null && decimal !== null && parsed !== decimal) {
+      const close = (value: number) => Math.abs(value - formula) <= Math.max(1e-9, Math.abs(formula) * 0.01);
+      if (close(decimal)) return decimal;
+      if (parsed !== null && close(parsed)) return parsed;
+    }
+    if (decimal !== null && /^-?0,\d+$/.test(firstLine)) return decimal;
+    if (parsed !== null) return parsed;
   }
   const flat = cellAt(grid, graph);
   const withFormula = /^(\d[\d\u00a0 ]*(?:[.,]\d+)?)\s+[\d*+\-\/.,() ]*[*\/][\d*+\-\/.,() ]*$/u.exec(flat);
   if (withFormula) return parseNumberCell((withFormula[1] as string).trim(), grid.delimiter);
   return numberAt(grid, graph);
+}
+
+/** «0,049» и «145,8» как десятичные с запятой; null — не такое число. */
+function decimalCommaNumber(text: string): number | null {
+  const match = /^-?\d+(?:,\d+)?$/.exec(text.replace(/[\u00a0 ]/g, ""));
+  if (!match) return null;
+  const value = Number.parseFloat(match[0].replace(",", "."));
+  return Number.isFinite(value) ? value : null;
+}
+
+/**
+ * Значение формулы подсчёта объёма из ячейки: «(4*0,49+2*0,98) / 100», «1*16*2». Только числа (запятая —
+ * десятичная), «+ - * /» и скобки, разбором без eval; что-то другое — null (формулой не считается).
+ */
+function evaluateQuantityFormula(text: string): number | null {
+  const source = text.replace(/\s+/g, "");
+  if (source === "" || !/^[\d.,+\-*/()]+$/.test(source) || !/[*/+]/.test(source)) return null;
+  let index = 0;
+  const peek = () => source[index];
+  function number(): number | null {
+    const match = /^\d+(?:[.,]\d+)?/.exec(source.slice(index));
+    if (!match) return null;
+    index += match[0].length;
+    return Number.parseFloat(match[0].replace(",", "."));
+  }
+  function factor(): number | null {
+    if (peek() === "(") {
+      index += 1;
+      const value = expression();
+      if (peek() !== ")") return null;
+      index += 1;
+      return value;
+    }
+    if (peek() === "-") {
+      index += 1;
+      const value = factor();
+      return value === null ? null : -value;
+    }
+    return number();
+  }
+  function term(): number | null {
+    let value = factor();
+    while (value !== null && (peek() === "*" || peek() === "/")) {
+      const op = peek();
+      index += 1;
+      const right = factor();
+      if (right === null) return null;
+      value = op === "*" ? value * right : right === 0 ? null : value / right;
+    }
+    return value;
+  }
+  function expression(): number | null {
+    let value = term();
+    while (value !== null && (peek() === "+" || peek() === "-")) {
+      const op = peek();
+      index += 1;
+      const right = term();
+      if (right === null) return null;
+      value = op === "+" ? value + right : value - right;
+    }
+    return value;
+  }
+  const value = expression();
+  return value !== null && index === source.length && Number.isFinite(value) ? value : null;
 }
 
 /** Числа подряд после ячейки с подписью; чтение обрывает первая ячейка с текстом (повтор подписи в хвосте). */
