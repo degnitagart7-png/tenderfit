@@ -1,3 +1,4 @@
+import type { ArchiveReport } from "@/types/database";
 import { describeError } from "@/lib/errors";
 import { isEisBlockedError } from "@/lib/eisGate";
 import { computeContentHash } from "@/services/documentParser";
@@ -227,6 +228,14 @@ export interface ReparseStore {
   listTender(tenderId: string): Promise<ReparseDoc[]>;
   /** Запись результата — тот же метод, что у обычной загрузки. */
   save: TenderDocumentStore["save"];
+  /**
+   * Только отчёт об архиве (`raw_json.archive` со списком пропущенных файлов) — у строки,
+   * чей новый разбор не лучше прежнего. Текст строки не меняется. Без этой отметки такой
+   * архив попадал бы в отбор `archive_partial` при каждом запуске (отбор берёт строки без
+   * списка пропущенных) и каждый раз заново скачивался бы с ЕИС, а что в нём не читается,
+   * так и осталось бы неизвестным. Нет порта — строка не трогается, как раньше.
+   */
+  markArchive?: (tenderId: string, filename: string, archive: ArchiveReport) => Promise<void>;
 }
 
 export interface ReparseDeps {
@@ -701,8 +710,20 @@ export async function reparseUnreadable(
         if (!verdict.better) {
           report.processed += 1;
           report.notImproved += 1;
+          const fresh = documents[0]?.archive;
+          let marked = false;
+          if (deps.store.markArchive && fresh?.skipped && fresh.skipped.length > 0) {
+            try {
+              await deps.store.markArchive(tenderId, previous.filename, fresh);
+              marked = true;
+            } catch (err) {
+              deps.log(`  ✗ ${previous.filename}: отчёт об архиве не записан: ${describeError(err)}`);
+            }
+          }
           deps.log(
-            `  = ${previous.filename}: не лучше прежнего, строка не тронута (${verdict.note})`,
+            `  = ${previous.filename}: не лучше прежнего, ` +
+              `${marked ? `текст не тронут, записан список непрочитанных (${fresh?.skipped?.length ?? 0})` : "строка не тронута"} ` +
+              `(${verdict.note})`,
           );
           continue;
         }

@@ -107,6 +107,8 @@ const store: ReparseStore = {
     return rows.map((row) => toReparseDoc({ ...row, tender_id: tenderId }));
   },
   save: (regNumber, document) => supabaseStore.save(regNumber, document),
+  markArchive: (tenderId, filename, archive) =>
+    documentRepository.updateArchiveReport(tenderId, filename, archive),
 };
 
 async function main(): Promise<void> {

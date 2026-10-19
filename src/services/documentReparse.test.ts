@@ -1076,6 +1076,24 @@ describe("reparseUnreadable — архивы, прочитанные части�
     expect(log.join("\n")).toContain("не лучше прежнего");
   });
 
+  it("не лучше прежнего — текст не тронут, но список непрочитанных записывается", async () => {
+    const { deps, saved, log } = setup({
+      rows: [partialRow({ chars: 1_000_000, archive: { parsed: 3, total: 4, listed: false } })],
+      files: { [ARCHIVE]: await makeArchive() },
+    });
+    const marked: { tenderId: string; filename: string; names: string[] }[] = [];
+    deps.store.markArchive = async (tenderId, filename, archive) => {
+      marked.push({ tenderId, filename, names: (archive.skipped ?? []).map((entry) => entry.name) });
+    };
+
+    const report = await reparseUnreadable(deps, { dryRun: false });
+
+    expect(saved).toEqual([]);
+    expect(report.notImproved).toBe(1);
+    expect(marked).toEqual([{ tenderId: partialRow().tenderId, filename: ARCHIVE, names: ["Узел.dwg"] }]);
+    expect(log.join("\n")).toContain("записан список непрочитанных (1)");
+  });
+
   it("сбой скачивания не стирает прежний текст", async () => {
     // Файла нет в заглушке порта: чтение даёт строку пропуска download_failed.
     const { deps, saved, log } = setup({ rows: [partialRow()], files: {} });

@@ -559,6 +559,35 @@ export const documentRepository = {
     return data as TenderDocumentRow;
   },
 
+  /**
+   * Только отчёт об архиве у строки закупки: `raw_json.archive` заменяется, остальные поля
+   * raw_json (title, chars, ocr) и текст не трогаются. Нужен повторному разбору, когда новый
+   * результат не лучше прежнего, но список непрочитанных файлов записать нужно.
+   */
+  async updateArchiveReport(
+    tenderId: string,
+    filename: string,
+    archive: ArchiveReport,
+  ): Promise<void> {
+    const supabase = getSupabaseServerClient();
+    const { data, error } = await supabase
+      .from("tender_documents")
+      .select("id, raw_json")
+      .eq("tender_id", tenderId)
+      .eq("filename", filename)
+      .limit(1);
+    if (error) throw error;
+    const row = (data ?? [])[0] as { id: string; raw_json?: unknown } | undefined;
+    if (!row) return;
+    const current =
+      row.raw_json && typeof row.raw_json === "object" ? (row.raw_json as Record<string, unknown>) : {};
+    const { error: updateError } = await supabase
+      .from("tender_documents")
+      .update({ raw_json: { ...current, archive: archiveJson(archive) } })
+      .eq("id", row.id);
+    if (updateError) throw updateError;
+  },
+
   async updateParsed(
     id: string,
     input: UpdateParsedInput,
