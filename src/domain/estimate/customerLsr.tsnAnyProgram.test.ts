@@ -24,4 +24,12 @@ describe("ТСН-2001 (Форма № 4б) из любой программы", 
     expect(estimate?.total).toBeCloseTo(987_390.32, 1);
     expect(estimate?.positionsTotal).toBeGreaterThan(0);
   });
+
+  it("объём с формулой подсчёта в ячейке («32⏎1*16*2») читается как число из первой строки", () => {
+    const parsed = parseCustomerLsr([{ name: "2026-07-03_Сметы__2_.zip", text } as never]);
+    const positions = parsed.estimates[0]?.positions ?? [];
+    expect(positions.every((position) => position.quantity !== null)).toBe(true);
+    expect(positions[0]?.quantity).toBe(32);
+    expect(positions.find((position) => position.quantity === 145.8)).toBeDefined();
+  });
 });

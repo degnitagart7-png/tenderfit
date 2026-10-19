@@ -423,6 +423,26 @@ function numberAt(grid: Grid, graph: number): number | null {
   return text === "" ? null : parseNumberCell(text, grid.delimiter);
 }
 
+/**
+ * Объём из графы «Кол-во» формы № 4б ТСН-2001: под числом программа печатает формулу подсчёта —
+ * «32⏎1*16*2», «145,8⏎2*9*8,1». `cellAt` склеивает строки ячейки в «32 1*16*2», и такое число не
+ * читалось: закупка 32616405004 (КДЦ «Арктика», 20.10.2026) — 120 позиций из 515 на 12,65 млн ₽ (52 %
+ * сметы) ушли в BAD_QUANTITY и выпали из пересчёта. Берётся первая строка ячейки; если строки уже
+ * склеены — число перед хвостом-формулой из цифр, знаков «*+-/,.()» и пробелов.
+ */
+function quantityAt(grid: Grid, graph: number): number | null {
+  const raw = grid.cells[grid.columns[graph] as number] ?? "";
+  const firstLine = (raw.split(/\r?\n/)[0] ?? "").replace(/\s+/g, " ").trim();
+  if (firstLine !== "") {
+    const value = parseNumberCell(firstLine, grid.delimiter);
+    if (value !== null) return value;
+  }
+  const flat = cellAt(grid, graph);
+  const withFormula = /^(\d[\d\u00a0 ]*(?:[.,]\d+)?)\s+[\d*+\-\/.,() ]*[*\/][\d*+\-\/.,() ]*$/u.exec(flat);
+  if (withFormula) return parseNumberCell((withFormula[1] as string).trim(), grid.delimiter);
+  return numberAt(grid, graph);
+}
+
 /** Числа подряд после ячейки с подписью; чтение обрывает первая ячейка с текстом (повтор подписи в хвосте). */
 function numericRun(cells: readonly string[], labelIndex: number, delimiter: string): number[] {
   const run: number[] = [];
@@ -1063,7 +1083,7 @@ function parseTsnSegment(text: string): SegmentResult {
         rawJustification: (parsed.cells[columns[2] as number] ?? "").trim(),
         name: graph3,
         unit: tsnUnit(cellAt(grid, 4)),
-        quantity: numberAt(grid, 5),
+        quantity: quantityAt(grid, 5),
         offset: row.offset,
         ownUnitPrice: null,
         ownTotal: numberAt(grid, 11),
