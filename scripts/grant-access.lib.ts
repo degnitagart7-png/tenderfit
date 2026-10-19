@@ -1,12 +1,14 @@
 import { resolveAccess, type AccessInfo, type UserAccessRecord } from "../src/domain/access";
 import { PLANS } from "../src/domain/plans";
+import { extendPaidUntil } from "../src/domain/subscription";
 
 /**
  * Чистая часть scripts/grant-access.ts: разбор аргументов, новый срок оплаты и
  * строка списка. Отдельно от скрипта, чтобы проверяться тестом без базы.
  */
 
-const DAY_MS = 24 * 3_600_000;
+/** Правило продления общее с автоматической активацией после оплаты (src/domain/subscription.ts). */
+export { extendPaidUntil };
 
 export type GrantCommand =
   | { kind: "help" }
@@ -64,11 +66,6 @@ export function parseGrantArgs(argv: readonly string[]): GrantCommand {
   if (email === null || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new GrantArgsError("Нужен --email адрес@почта.ру");
   if (days === null) throw new GrantArgsError("Нужен --days число дней");
   return { kind: "grant", email, days, plan };
-}
-
-/** Новый срок оплаты: от большего из «сейчас» и текущего срока, чтобы продление не отнимало оплаченное. */
-export function extendPaidUntil(currentPaidUntil: number | null, nowMs: number, days: number): number {
-  return Math.max(nowMs, currentPaidUntil ?? 0) + Math.round(days * DAY_MS);
 }
 
 const STATUS_LABEL: Record<AccessInfo["status"], string> = {

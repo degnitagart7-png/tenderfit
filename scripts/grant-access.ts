@@ -2,6 +2,7 @@ import { config } from "dotenv";
 import { resolve } from "node:path";
 
 import { getSupabaseServerClient } from "../src/lib/supabase";
+import { subscriptionRepository } from "../src/repositories/subscriptionRepository";
 import {
   GRANT_USAGE,
   GrantArgsError,
@@ -64,22 +65,13 @@ async function main(): Promise<void> {
     return;
   }
 
-  const found = await db
-    .from("app_users")
-    .select("id, email, trial_ends_at, paid_until, plan")
-    .eq("email", command.email)
-    .limit(1);
-  if (found.error) throw new Error(found.error.message);
-  const user = (found.data as Array<DbRow & { id: string }> | null)?.[0];
+  const user = await subscriptionRepository.findByEmail(command.email);
   if (!user) throw new Error(`Пользователь ${command.email} не найден: он должен сначала зарегистрироваться`);
 
+  // Правило продления общее с автоматической активацией после оплаты (src/domain/subscription.ts).
   const now = Date.now();
-  const paidUntil = extendPaidUntil(ms(user.paid_until), now, command.days);
-  const update: { paid_until: string; plan?: string } = { paid_until: new Date(paidUntil).toISOString() };
-  if (command.plan !== null) update.plan = command.plan;
-
-  const saved = await db.from("app_users").update(update).eq("id", user.id);
-  if (saved.error) throw new Error(saved.error.message);
+  const paidUntil = extendPaidUntil(user.paidUntil, now, command.days);
+  await subscriptionRepository.setPaid(user.id, paidUntil, command.plan);
 
   console.log(`Готово. ${command.email}: оплачено до ${new Date(paidUntil).toISOString()} (+${String(command.days)} дн.)`);
   console.log(`Пакет: ${command.plan ?? user.plan ?? "не задан"}`);

@@ -74,6 +74,11 @@
  *   ADMIN_EMAILS            — почты администраторов через запятую: им не пишем о пробном
  *                             периоде. Письма «закончится завтра» и «закончился» раз в час
  *                             уходят при настроенном SMTP_* (см. trialNoticeService)
+ *   TOCHKA_JWT, TOCHKA_CLIENT_ID, TOCHKA_CUSTOMER_CODE, TOCHKA_ACCOUNT_ID — доступ к API Точки
+ *                             (файл /etc/tenderfit/tochka.env): раз в 5 минут воркер опрашивает статус
+ *                             ждущих счетов и включает подписку при оплате (см. paymentWatch).
+ *                             Без них проверяется только просрочка счетов. Вместе с ADMIN_EMAILS и
+ *                             SMTP_* нужны для писем об оплате
  *
  * NODE_TLS_REJECT_UNAUTHORIZED=0 сюда не принадлежит: переменная осталась от
  * локального обхода корпоративного прокси и отключает проверку сертификатов.
@@ -124,6 +129,7 @@ import { resolveZoneTender } from "../src/domain/estimate/documentRegion";
 import { defaultBalanceAlertDeps, runLlmBalanceCheck } from "../src/services/llmBalanceAlert";
 import { defaultTrialNoticeDeps, runTrialNotices } from "../src/services/trialNoticeService";
 import { startNotificationWatch } from "../src/services/notificationWatch";
+import { startPaymentWatch } from "../src/services/paymentWatch";
 
 loadEnv({ path: resolve(__dirname, "../.env.local") });
 
@@ -1499,6 +1505,8 @@ async function main(): Promise<void> {
     const stopBalanceWatch = startBalanceWatch();
     const stopTrialNoticeWatch = startTrialNoticeWatch();
     const stopNotificationWatch = startNotificationWatch(log);
+    // Оплата: раз в 5 минут опрос банка по ждущим счетам и разбор застрявших вебхуков (страховка вебхука).
+    const stopPaymentWatch = startPaymentWatch(log);
     if (parallelMode) installLaneConsolePrefix();
     while (!stopRequested) {
       try {
@@ -1519,6 +1527,7 @@ async function main(): Promise<void> {
     stopBalanceWatch();
     stopTrialNoticeWatch();
     stopNotificationWatch();
+    stopPaymentWatch();
     // Дорожки доделывают начатое: после сигнала новых дел не берут, а идущие
     // заканчиваются сами (прогоны — в пределах STOP_GRACE_MS, затем их останавливает
     // requestStop). Выходим, когда свободны все.
