@@ -4,6 +4,7 @@ import { describeError } from "@/lib/errors";
 import { defaultPaymentDeps } from "@/services/payments/deps";
 import { handleWebhookPayload } from "@/services/payments/webhookService";
 import { getWebhookVerifier } from "@/services/payments/webhookRuntime";
+import { describeWebhookBody, extractWebhookToken } from "@/services/tochka/webhookVerify";
 
 /**
  * POST /api/payments/tochka/webhook — вебхуки Точка Банка (без сессии: бьёт банк).
@@ -17,18 +18,20 @@ import { getWebhookVerifier } from "@/services/payments/webhookRuntime";
  *
  * В журнал уходят только вид события и причина отказа: ни тело, ни подпись не пишутся.
  */
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const MAX_BODY_CHARS = 20_000;
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
-  const token = (await request.text()).trim();
-  if (token === "" || token.length > MAX_BODY_CHARS) return NextResponse.json({ error: "Пустое тело" }, { status: 400 });
+  const raw = await request.text();
+  if (raw.trim() === "" || raw.length > MAX_BODY_CHARS) return NextResponse.json({ error: "Пустое тело" }, { status: 400 });
+  const token = extractWebhookToken(raw);
 
   const verified = await getWebhookVerifier().verify(token);
   if (!verified.ok) {
-    console.warn(`Вебхук Точки отклонён: ${verified.reason}`);
+    console.warn(`Вебхук Точки отклонён: ${verified.reason} (${describeWebhookBody(raw, request.headers.get("content-type"))})`);
     return NextResponse.json({ error: "Подпись не подтверждена" }, { status: 401 });
   }
 

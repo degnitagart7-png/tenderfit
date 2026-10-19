@@ -141,3 +141,40 @@ export function createWebhookVerifier(deps: WebhookVerifyDeps = {}): WebhookVeri
     },
   };
 }
+
+const JWT_SHAPE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+
+/**
+ * Строка JWT из тела вебхука.
+ *
+ * По документации Точка шлёт «голую» строку с `Content-Type: text/plain`, но первые тестовые
+ * вебхуки боевого контура (20.10.2026) отклонились как malformed. Поэтому тело принимается в
+ * трёх видах: голая строка, та же строка в кавычках (JSON-строка) и JSON-объект, в одном из
+ * строковых полей которого лежит JWT. Подпись проверяется дальше как обычно — терпимость
+ * к упаковке ничего не ослабляет.
+ */
+export function extractWebhookToken(raw: string): string {
+  const body = raw.trim();
+  if (JWT_SHAPE.test(body)) return body;
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (typeof parsed === "string" && JWT_SHAPE.test(parsed.trim())) return parsed.trim();
+    if (parsed !== null && typeof parsed === "object") {
+      for (const value of Object.values(parsed as Record<string, unknown>)) {
+        if (typeof value === "string" && JWT_SHAPE.test(value.trim())) return value.trim();
+      }
+    }
+  } catch {
+    // не JSON — вернём как есть, проверка скажет malformed
+  }
+  return body;
+}
+
+/** Форма тела для журнала без содержимого: длина, число частей через точку, первый символ, тип. */
+export function describeWebhookBody(raw: string, contentType: string | null): string {
+  const body = raw.trim();
+  const first = body.charAt(0);
+  const firstLabel = /[A-Za-z0-9]/.test(first) ? "буква/цифра" : JSON.stringify(first);
+  return `длина ${String(body.length)}, частей ${String(body.split(".").length)}, первый символ ${firstLabel}, content-type ${contentType ?? "нет"}`;
+}
+

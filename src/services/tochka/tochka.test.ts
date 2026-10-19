@@ -367,3 +367,21 @@ describe("проверка подписи вебхука (RS256)", () => {
     expect(parsePublicKeys("-----BEGIN PUBLIC KEY-----\nxx\n-----END PUBLIC KEY-----")).toHaveLength(0);
   });
 });
+
+describe("extractWebhookToken: упаковка тела вебхука", () => {
+  const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJ3ZWJob29rVHlwZSI6ImluY29taW5nUGF5bWVudCJ9.c2ln";
+  it("голая строка, строка в кавычках и JSON-объект дают один и тот же токен", async () => {
+    const { extractWebhookToken } = await import("@/services/tochka/webhookVerify");
+    expect(extractWebhookToken(`  ${jwt}\n`)).toBe(jwt);
+    expect(extractWebhookToken(JSON.stringify(jwt))).toBe(jwt);
+    expect(extractWebhookToken(JSON.stringify({ token: jwt }))).toBe(jwt);
+    expect(extractWebhookToken("не jwt")).toBe("не jwt");
+  });
+  it("описание тела не содержит самого тела", async () => {
+    const { describeWebhookBody } = await import("@/services/tochka/webhookVerify");
+    const text = describeWebhookBody(JSON.stringify(jwt), "text/plain");
+    expect(text).toContain("частей 3");
+    expect(text).not.toContain("eyJ");
+  });
+});
+
