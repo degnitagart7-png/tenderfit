@@ -4,7 +4,9 @@ import { useRef, useState } from "react";
 import { Upload, FileText, X } from "lucide-react";
 import type { CompanyDocument } from "@/domain/entities";
 import { Button } from "@/components/ui/primitives";
-import { parseDocument, formatFileSize } from "@/services/documentParser";
+import { formatFileSize } from "@/services/documentParser";
+import { isUnreadableText } from "@/services/documentParser";
+import { parseDocumentSmart } from "@/services/serverDocumentParse";
 
 const categoryLabels: Record<CompanyDocument["category"], string> = {
   license: "Лицензия",
@@ -51,7 +53,13 @@ export function DocumentUploader({ documents, onChange }: DocumentUploaderProps)
       }
 
       try {
-        const parsed = await parseDocument(file);
+        const parsed = await parseDocumentSmart(file);
+        // Причина вместо содержимого («[Ошибка парсинга: …]») — не текст документа: в
+        // профиле компании она ушла бы в модель как описание опыта и лицензий.
+        if (isUnreadableText(parsed.text)) {
+          setError(`Не удалось прочитать "${file.name}": ${parsed.text.trim().replace(/^\[|\]$/g, "")}`);
+          continue;
+        }
         const doc: CompanyDocument = {
           id: `doc-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
           fileName: parsed.fileName,

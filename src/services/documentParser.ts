@@ -2,7 +2,8 @@
  * Парсинг загружаемых документов в браузере плюс две утилиты для текста.
  *
  * Клиентская часть (`parseDocument`, `formatFileSize`) читает файл, который
- * партнёр загрузил в профиль компании или на страницу сметы: PDF, DOCX, CSV и таблицы Excel. Серверный разбор байтов
+ * партнёр загрузил в профиль компании или на страницу сметы: PDF, DOCX, CSV и таблицы Excel.
+ * Старый .doc и архивы браузер не читает — их отдаёт серверу serverDocumentParse.ts. Серверный разбор байтов
  * живёт в attachmentParser.ts — он умеет архивы, старые .doc и таблицы, и
  * всегда берёт legacy-сборку pdfjs, потому что обычная падает в Node.
  *
@@ -95,7 +96,10 @@ function storedType(kind: ReadKind): ParsedDocument["fileType"] {
 function getFileType(fileName: string): ReadKind {
   const ext = fileName.toLowerCase().split(".").pop() ?? "";
   if (ext === "pdf") return "pdf";
-  if (ext === "docx" || ext === "doc") return "docx";
+  if (ext === "docx") return "docx";
+  // Старый бинарный .doc mammoth не читает (только docx): в браузере это «неподдерживаемый формат»,
+  // а настоящий разбор — на сервере (serverDocumentParse.ts → /api/documents/parse).
+  // Раньше .doc шёл в mammoth и возвращал невнятную ошибку zip.
   if (ext === "csv") return "csv";
   if (ext === "txt") return "txt";
   if (ext === "odt" || ext === "ott") return "odt";

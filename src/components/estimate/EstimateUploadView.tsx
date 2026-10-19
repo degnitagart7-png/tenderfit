@@ -22,7 +22,9 @@ import { useBillEdits } from "@/hooks/useBillEdits";
 import { useEstimateAuditJob, useEstimateJob } from "@/hooks/useEstimateJob";
 import { usePriceZones } from "@/hooks/usePriceZones";
 import { cn } from "@/lib/cn";
-import { isUnreadableText, parseDocument } from "@/services/documentParser";
+import { isUnreadableText } from "@/services/documentParser";
+import { parseDocumentSmart } from "@/services/serverDocumentParse";
+import type { ArchiveReport } from "@/types/database";
 import { formatFileSize } from "@/utils/format";
 
 /**
@@ -40,8 +42,11 @@ import { formatFileSize } from "@/utils/format";
  *
  * Файлы разбираются в браузере, а не отправляются целиком: документация
  * закупки — это десятки мегабайт, из которых серверу нужен только текст.
- * Разбор тот же самый, что у воркера, поэтому результат совпадает с тем, что
- * увидит карточка закупки.
+ * Исключение — старый бинарный .doc и архивы (zip, rar, 7z): браузер их не
+ * читает, и они уходят на серверный разбор (`/api/documents/parse`, до 50 МБ,
+ * без распознавания сканов). Для закупок Сбербанк-АСТ, Фабриканта и ЭТП ГПБ
+ * документы робот не скачивает, человек берёт их на площадке — как правило,
+ * архивом. Скан внутри архива пропускается с причиной, и она показана в списке.
  */
 
 interface LoadedDocument {
@@ -50,18 +55,51 @@ interface LoadedDocument {
   readonly size: number;
   /** В файле нашлась смета (ЛСР или сводная) — её можно сравнить и проверить. */
   readonly hasEstimate: boolean;
+  /** Для архива: сколько файлов прочитано из скольких и какие пропущены. */
+  readonly archive?: ArchiveReport;
+}
+
+/** Архив, из которого ничего не прочитано: в расчёт он не идёт, но что в нём было — человеку показываем. */
+interface UnreadArchive {
+  readonly name: string;
+  readonly report: ArchiveReport;
+}
+
+/**
+ * Что в архиве не прочитано, и почему. Свёрнуто: список бывает в сотни строк (в
+ * архиве проектной документации чертежей и сканов больше, чем текста), а нужен
+ * он, когда непонятно, почему смета вышла без части документов.
+ */
+function SkippedFiles({ report }: { report: ArchiveReport }) {
+  const skipped = report.skipped ?? [];
+  if (skipped.length === 0) return null;
+  return (
+    <details className="mt-1.5 text-[13px]" data-testid="archive-skipped">
+      <summary className="muted cursor-pointer select-none">Не прочитано: {skipped.length}</summary>
+      <ul className="mt-1 max-h-48 space-y-0.5 overflow-y-auto pl-4">
+        {skipped.map((entry, index) => (
+          <li key={`${entry.name}-${String(index)}`} className="muted">
+            <span className="break-all text-foreground">{entry.name}</span> — {entry.reason}
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
 }
 
 /*
-  Форматы, которые читает браузерный разбор (documentParser.parseDocument): файл
-  не уходит на сервер, на сервер уходит только текст. Серверный разбор шире — zip,
-  rar, 7z и сканы с распознаванием, — но сюда он не дотягивается: архивы
-  распаковываются, а Tesseract запускается только на машине воркера. Эти форматы
-  в список намеренно не входят: файл прошёл бы выбор и тут же вернулся бы
-  «Неподдерживаемый формат». Архив из закупки читает карточка закупки; здесь его
-  нужно распаковать и загрузить файлы по отдельности.
+  Форматы выбора файла. Браузерный разбор (documentParser.parseDocument) читает
+  всё, кроме старого .doc и архивов: их читает сервер (serverDocumentParse.ts).
+  Сканы-картинки в список намеренно не входят: распознавание на этом экране
+  выключено, и файл прошёл бы выбор и тут же вернулся бы «Неподдерживаемый
+  формат». Скан внутри архива не ошибка — он попадает в список пропущенных.
 */
-const ACCEPT = ".pdf,.docx,.doc,.xlsx,.xls,.xlsm,.ods,.ots,.odt,.ott,.rtf,.csv,.txt";
+const ACCEPT = ".pdf,.docx,.doc,.xlsx,.xls,.xlsm,.ods,.ots,.odt,.ott,.rtf,.csv,.txt,.zip,.rar,.7z";
+
+/** «1 файла», «5 файлов»: после «из» стоит родительный падеж. */
+function filesWord(total: number): string {
+  return total % 10 === 1 && total % 100 !== 11 ? "файла" : "файлов";
+}
 
 function Step({
   n,
@@ -99,6 +137,7 @@ export function EstimateUploadView() {
   const [reading, setReading] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [unreadArchives, setUnreadArchives] = useState<UnreadArchive[]>([]);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const job = useEstimateJob();
@@ -151,12 +190,14 @@ export function EstimateUploadView() {
     if (files.length === 0) return;
     setReading(true);
     setError(null);
+    setUnreadArchives([]);
     const loaded: LoadedDocument[] = [];
     const failed: string[] = [];
+    const unread: UnreadArchive[] = [];
 
     for (const file of files) {
       try {
-        const parsed = await parseDocument(file);
+        const parsed = await parseDocumentSmart(file);
         /*
           Разбор не бросает исключение: он возвращает объяснение в поле текста.
           Отправить такое объяснение на сервер значит получить смету на ноль
@@ -165,6 +206,7 @@ export function EstimateUploadView() {
         */
         if (isUnreadableText(parsed.text)) {
           failed.push(`${file.name}: ${parsed.text.trim()}`);
+          if (parsed.archive) unread.push({ name: file.name, report: parsed.archive });
           continue;
         }
         if (parsed.text.trim().length === 0) {
@@ -175,13 +217,20 @@ export function EstimateUploadView() {
         const hasEstimate =
           parseCustomerLsr(one).estimates.length > 0 ||
           parseCustomerEstimates(one).some((estimate) => estimate.sections.length > 0);
-        loaded.push({ name: file.name, text: parsed.text, size: file.size, hasEstimate });
+        loaded.push({
+          name: file.name,
+          text: parsed.text,
+          size: file.size,
+          hasEstimate,
+          ...(parsed.archive ? { archive: parsed.archive } : {}),
+        });
       } catch (err) {
         failed.push(`${file.name}: ${err instanceof Error ? err.message : "не читается"}`);
       }
     }
 
     setDocuments((current) => [...current, ...loaded]);
+    setUnreadArchives(unread);
     if (failed.length > 0) setError(`Не прочитано — ${failed.join("; ")}`);
     setReading(false);
   };
@@ -273,11 +322,12 @@ export function EstimateUploadView() {
                 )}
               </p>
               <p className="muted text-[12.5px]">
-                PDF, Word, Excel (xlsx, xls), OpenDocument (odt, ods), RTF, CSV · файлы читаются у вас в браузере, отправляется только текст
+                PDF, Word (docx, doc), Excel (xlsx, xls), OpenDocument (odt, ods), RTF, CSV · файлы читаются у вас в браузере, отправляется только текст
               </p>
               <p className="muted text-[12.5px]">
-                Архивы (zip, rar, 7z) и сканы-картинки здесь не читаются: распакуйте архив и загрузите файлы по отдельности. Родные файлы
-                сметных программ (.gsfx, .xml) тоже не читаются — выгрузите смету в Excel или PDF.
+                Архивы (zip, rar, 7z) и старые .doc читает сервер, до 50 МБ: загрузите архив документации с площадки как есть. Сканы внутри
+                архива и сканы-картинки не распознаются — они попадут в список «Не прочитано». Родные файлы сметных программ (.gsfx, .xml)
+                тоже не читаются — выгрузите смету в Excel или PDF.
               </p>
               <input
                 ref={fileInput}
@@ -299,25 +349,35 @@ export function EstimateUploadView() {
             {documents.length > 0 && (
               <ul className="divide-y divide-border rounded-control border border-border">
                 {documents.map((item, index) => (
-                  <li key={`${item.name}-${String(index)}`} className="flex items-center gap-3 px-3 py-2 text-sm">
-                    <FileText className="h-4 w-4 shrink-0 text-faint" strokeWidth={1.75} aria-hidden />
-                    <span className="min-w-0 flex-1 truncate text-foreground">{item.name}</span>
-                    {item.hasEstimate && (
-                      <Badge tone="accent" dot={false} className="text-[12px]">
-                        смета
-                      </Badge>
+                  <li key={`${item.name}-${String(index)}`} className="px-3 py-2 text-sm">
+                    <div className="flex items-center gap-3">
+                      <FileText className="h-4 w-4 shrink-0 text-faint" strokeWidth={1.75} aria-hidden />
+                      <span className="min-w-0 flex-1 truncate text-foreground">{item.name}</span>
+                      {item.hasEstimate && (
+                        <Badge tone="accent" dot={false} className="text-[12px]">
+                          смета
+                        </Badge>
+                      )}
+                      <span className="muted num hidden text-xs sm:inline">
+                        {formatFileSize(item.size)} · {item.text.length.toLocaleString("ru-RU")} знаков
+                      </span>
+                      <button
+                        type="button"
+                        aria-label={`Убрать ${item.name}`}
+                        onClick={() => setDocuments((current) => current.filter((_, at) => at !== index))}
+                        className="text-faint hover:text-foreground"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                    {item.archive !== undefined && (
+                      <div className="pl-7">
+                        <p className="muted text-[13px]" data-testid="archive-summary">
+                          Прочитано {item.archive.parsed} из {item.archive.total} {filesWord(item.archive.total)}
+                        </p>
+                        <SkippedFiles report={item.archive} />
+                      </div>
                     )}
-                    <span className="muted num hidden text-xs sm:inline">
-                      {formatFileSize(item.size)} · {item.text.length.toLocaleString("ru-RU")} знаков
-                    </span>
-                    <button
-                      type="button"
-                      aria-label={`Убрать ${item.name}`}
-                      onClick={() => setDocuments((current) => current.filter((_, at) => at !== index))}
-                      className="text-faint hover:text-foreground"
-                    >
-                      <X className="h-4 w-4" />
-                    </button>
                   </li>
                 ))}
               </ul>
@@ -405,6 +465,14 @@ export function EstimateUploadView() {
               />
             )}
             {error !== null && <p className="text-brick-fg">{error}</p>}
+            {unreadArchives.map((item) => (
+              <div key={item.name} className="muted">
+                <p>
+                  {item.name}: прочитано {item.report.parsed} из {item.report.total} {filesWord(item.report.total)}
+                </p>
+                <SkippedFiles report={item.report} />
+              </div>
+            ))}
             {job.error !== null && <p className="text-brick-fg">{job.error}</p>}
             {auditJob.error !== null && <p className="text-brick-fg">{auditJob.error}</p>}
           </div>

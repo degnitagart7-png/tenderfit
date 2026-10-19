@@ -33,6 +33,7 @@ vi.mock("@/services/syncJobService", () => ({
 import { GET as analysisCompleted } from "@/app/api/analysis/completed/route";
 import { POST as analysisTrigger } from "@/app/api/analysis/trigger/route";
 import { GET as documents } from "@/app/api/documents/route";
+import { POST as documentsParse } from "@/app/api/documents/parse/route";
 import { GET as estimateGet, POST as estimatePost } from "@/app/api/estimate/route";
 import { POST as expand } from "@/app/api/search/expand/route";
 import { POST as liveSearch } from "@/app/api/search/live/route";
@@ -72,6 +73,11 @@ interface Handler {
 const handlers: Handler[] = [
   { name: "GET /api/tenders", call: (headers) => tenders(req("/api/tenders", { headers })) },
   { name: "GET /api/documents", call: (headers) => documents(req("/api/documents?tenderId=1", { headers })) },
+  {
+    // Тело не multipart: до разбора файла дело не доходит — важна только проверка входа.
+    name: "POST /api/documents/parse",
+    call: (headers) => documentsParse(req("/api/documents/parse", { method: "POST", headers, body: {} })),
+  },
   { name: "GET /api/analysis/completed", call: (headers) => analysisCompleted(req("/api/analysis/completed", { headers })) },
   {
     name: "POST /api/analysis/trigger",
