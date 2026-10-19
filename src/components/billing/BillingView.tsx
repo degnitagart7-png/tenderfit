@@ -7,7 +7,7 @@ import { accountApiService } from "@/services/accountApiService";
 import { OPERATOR } from "@/lib/legal";
 import { cn } from "@/lib/cn";
 import { effectiveAccess, formatTimeLeft, type AccessInfo } from "@/domain/access";
-import { PLANS, formatPlanPrice, invoiceRequestHref, planById, type Plan } from "@/domain/plans";
+import { PLANS, formatFirstMonthPrice, formatPlanPrice, invoiceRequestHref, planById, type Plan } from "@/domain/plans";
 
 /** Строка о текущем доступе над тарифами: пробный период, оплата или «закончился». */
 function accessNote(access: AccessInfo | null): { text: string; tone: "info" | "warn" } | null {
@@ -54,6 +54,7 @@ export function BillingView() {
 
   const plan = planById(selected) ?? PLANS[0]!;
   const priced = plan.priceRub !== null;
+  const planFirstMonth = formatFirstMonthPrice(plan);
 
   return (
     <div className="mx-auto max-w-5xl space-y-10">
@@ -85,13 +86,20 @@ export function BillingView() {
       <div role="radiogroup" aria-label="Пакет подписки" className="grid gap-4 md:grid-cols-3">
         {PLANS.map((p) => {
           const active = p.id === selected;
+          const firstMonth = formatFirstMonthPrice(p);
           return (
             <button
               key={p.id}
               type="button"
               role="radio"
               aria-checked={active}
-              aria-label={`Пакет «${p.name}»${p.priceRub === null ? "" : `, ${formatPlanPrice(p)} в месяц`}`}
+              aria-label={`Пакет «${p.name}»${
+                p.priceRub === null
+                  ? ""
+                  : firstMonth
+                    ? `, первый месяц ${firstMonth}, далее ${formatPlanPrice(p)} в месяц`
+                    : `, ${formatPlanPrice(p)} в месяц`
+              }`}
               onClick={() => setSelected(p.id)}
               className={cn(
                 "flex flex-col rounded-card border bg-panel p-6 text-left transition-colors",
@@ -102,6 +110,11 @@ export function BillingView() {
               <span className="mt-3 block text-[34px] font-semibold leading-none tracking-tight text-foreground">
                 {p.priceRub === null ? (
                   "По запросу"
+                ) : firstMonth ? (
+                  <>
+                    {firstMonth}
+                    <span className="ml-1.5 text-[15px] font-medium text-muted-foreground">первый месяц</span>
+                  </>
                 ) : (
                   <>
                     {formatPlanPrice(p)}
@@ -109,6 +122,11 @@ export function BillingView() {
                   </>
                 )}
               </span>
+              {firstMonth && p.priceRub !== null && (
+                <span className="mt-1.5 block text-[14px] font-medium text-muted-foreground">
+                  далее {formatPlanPrice(p)} в месяц
+                </span>
+              )}
               <span className="mt-3 block min-h-[3.2em] text-[14px] leading-snug text-muted-foreground">
                 {p.tagline}
               </span>
@@ -140,9 +158,17 @@ export function BillingView() {
             <div className="flex justify-between py-3.5">
               <dt className="font-medium text-foreground">К оплате</dt>
               <dd className="text-[19px] font-semibold tabular-nums text-foreground" data-testid="total">
-                {formatPlanPrice(plan)}
+                {planFirstMonth ?? formatPlanPrice(plan)}
               </dd>
             </div>
+            {planFirstMonth && (
+              <div className="flex justify-between py-3.5">
+                <dt className="text-muted-foreground">Со второго месяца</dt>
+                <dd className="font-medium text-foreground" data-testid="then-price">
+                  далее {formatPlanPrice(plan)} в месяц
+                </dd>
+              </div>
+            )}
           </dl>
 
           <a
