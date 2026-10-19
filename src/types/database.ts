@@ -424,6 +424,12 @@ export interface SyncJobPayload {
    * было бы привязать, у такого расчёта нет.
    */
   documents?: { name: string; text: string }[];
+  /**
+   * Имена присланных файлов — копия `documents[].name` отдельным полем. Нужна списку «Мои расчёты»:
+   * PostgREST отдаёт поле payload целиком или не отдаёт вовсе, а `documents` весит мегабайты текста,
+   * ради имён его не читают. Пишет `POST /api/estimate` с 20.10.2026; у заданий раньше поля нет.
+   */
+  documentNames?: string[];
   /** Откуда задание: 'press' — кнопка «Найти новые закупки», 'manual' — панель. */
   reason?: string;
   /**

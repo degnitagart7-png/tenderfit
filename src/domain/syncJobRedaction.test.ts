@@ -81,4 +81,25 @@ describe("redactSyncJob", () => {
   it("пустой payload не ломает вырезание", () => {
     expect(() => redactSyncJob(job({}))).not.toThrow();
   });
+
+  it("результат расчёта сметы и аудита сметы заказчика из журнала вырезается, счётчики остаются", () => {
+    const row = {
+      ...job({ tenderId: "t-1" }),
+      requested_by: "anna@firma.ru",
+      report: { note: "ok", estimate: { document: { totals: { total: 123 } } }, audit: { reports: [] } },
+    } as unknown as SyncJobRow;
+
+    const redacted = redactSyncJob(row);
+
+    // Смета личная: журнал видит каждый вошедший, и чужой расчёт в нём читаться не должен.
+    expect(redacted.report).toEqual({ note: "ok" });
+    expect(JSON.stringify(redacted)).not.toContain("123");
+    // Почта автора и прежде не уходила наружу.
+    expect(redacted.requested_by).toBeNull();
+  });
+
+  it("отчёт без результата сметы возвращается как есть", () => {
+    const row = { ...job({}), report: { tenders: 3, note: "обход" } } as unknown as SyncJobRow;
+    expect(redactSyncJob(row).report).toEqual({ tenders: 3, note: "обход" });
+  });
 });

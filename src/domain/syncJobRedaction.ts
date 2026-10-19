@@ -47,10 +47,20 @@ export function redactSyncJob(source: SyncJobRow): RedactedSyncJob {
     журнал очереди видит каждый вошедший — чужая почта в нём ни к чему. Метки
     источника («ui», «live-search», «press») остаются: в них секрета нет.
   */
-  const job: SyncJobRow =
+  let job: SyncJobRow =
     typeof source.requested_by === "string" && source.requested_by.includes("@")
       ? { ...source, requested_by: null }
       : source;
+  /*
+    Результат расчёта сметы — личный: он принадлежит тому, кто его поставил (с 20.10.2026 ручки
+    `/api/estimate*` отдают его только владельцу), а журнал очереди видит каждый вошедший. Без этого
+    чужую смету и проверку сметы заказчика можно было прочесть в `recent[].report`. Счётчики отчёта
+    (`tenders`, `note` и т. п.) остаются: журнал отвечает на вопрос «что делал воркер».
+  */
+  if (job.report !== null && job.report !== undefined && (job.report.estimate !== undefined || job.report.audit !== undefined)) {
+    const { estimate: _estimate, audit: _audit, ...counters } = job.report;
+    job = { ...job, report: counters };
+  }
   const payload = job.payload;
   if (payload === null || payload === undefined) return { ...job, payload: null };
 

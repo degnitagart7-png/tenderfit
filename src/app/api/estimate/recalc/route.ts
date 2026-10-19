@@ -1,8 +1,10 @@
 import { requireAccess } from "@/app/api/auth/requireAccess";
+import { estimateViewer } from "@/app/api/estimate/viewer";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { createAssistLimiter } from "@/app/api/search/guard";
+import { canReadEstimateJob, type EstimateViewer } from "@/domain/estimate/jobOwnership";
 import { billEditsSchema } from "@/domain/estimate/billEdits";
 import type { EstimateBillSnapshot } from "@/domain/estimate/billReview";
 import type { EstimateDocument } from "@/domain/estimate/types";
@@ -31,6 +33,10 @@ import {
  * последующие — доли секунды. Сам отчёт задания (он весит мегабайты) держится в кэше пять минут:
  * правят строку за строкой, и каждый раз тянуть его из базы незачем. Отчёт завершённого задания
  * не меняется, поэтому кэш безопасен.
+ *
+ * Пересчитывать можно только свой расчёт (и администратору — любой): ведомость и цены чужого расчёта —
+ * это его смета. Владелец проверяется на каждом запросе, в том числе когда отчёт взят из кэша: кэш
+ * ключуется номером задания, и без этого чужой номер получал бы ответ из памяти.
  */
 
 export const runtime = "nodejs";
@@ -38,7 +44,12 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
 const limiter = createAssistLimiter(200);
-const sources = createTtlCache<RecalcSource>({ ttlMs: 5 * 60_000, maxEntries: 8 });
+/** Отчёт в кэше помнит, чей он: проверка владельца не зависит от того, из памяти ответ или из базы. */
+interface CachedSource {
+  readonly source: RecalcSource;
+  readonly requestedBy: string | null;
+}
+const sources = createTtlCache<CachedSource>({ ttlMs: 5 * 60_000, maxEntries: 8 });
 
 /** Правки приходят целиком при каждом пересчёте; сотни строк с запасом укладываются в это. */
 const MAX_BODY_CHARS = 1_000_000;
@@ -48,12 +59,15 @@ const bodySchema = z.object({
   edits: billEditsSchema,
 });
 
-async function sourceOf(jobId: string): Promise<RecalcSource | { error: string; status: number }> {
+const NOT_FOUND = { error: "Расчёт не найден", status: 404 } as const;
+
+async function sourceOf(jobId: string, viewer: EstimateViewer): Promise<RecalcSource | { error: string; status: number }> {
   const cached = sources.get(jobId);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined) return canReadEstimateJob(viewer, cached.requestedBy) ? cached.source : NOT_FOUND;
 
   const job = await syncJobRepository.findById(jobId);
-  if (job === null || job.kind !== "estimate") return { error: "Расчёт не найден", status: 404 };
+  // Чужой расчёт — тот же ответ, что на несуществующий: номер ничего не выдаёт.
+  if (job === null || job.kind !== "estimate" || !canReadEstimateJob(viewer, job.requested_by)) return NOT_FOUND;
   if (job.status !== "completed") return { error: "Расчёт ещё не закончен", status: 409 };
 
   const estimate = job.report?.estimate;
@@ -66,7 +80,7 @@ async function sourceOf(jobId: string): Promise<RecalcSource | { error: string; 
     };
   }
   const source: RecalcSource = { document: estimate.document as EstimateDocument, bill };
-  sources.set(jobId, source);
+  sources.set(jobId, { source, requestedBy: job.requested_by });
   return source;
 }
 
@@ -97,7 +111,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 
   try {
-    const source = await sourceOf(parsed.data.jobId);
+    const source = await sourceOf(parsed.data.jobId, estimateViewer(request));
     if ("error" in source) return NextResponse.json({ error: source.error }, { status: source.status });
 
     const result = await recalculateEstimate(source, parsed.data.edits);

@@ -11,12 +11,14 @@ vi.mock("@/app/api/auth/requireAccess", () => ({ requireAccess: vi.fn(async () =
 vi.mock("@/repositories/syncJobRepository", () => ({
   syncJobRepository: {
     readHeartbeat: vi.fn(),
+    findById: vi.fn(),
     findActiveEstimate: vi.fn(),
     findLatestEstimate: vi.fn(),
     create: vi.fn(),
   },
 }));
 
+import { rememberRequestEmail } from "@/app/api/auth/requestUser";
 import { GET, POST } from "@/app/api/estimate/route";
 import { syncJobRepository } from "@/repositories/syncJobRepository";
 
@@ -97,7 +99,7 @@ describe("режим задания: расчёт сметы и аудит см�
     const response = await POST(post({ tenderId: "t1", mode: "audit" }));
 
     expect(response.status).toBe(200);
-    expect(repo.findActiveEstimate).toHaveBeenCalledWith("t1", "audit");
+    expect(repo.findActiveEstimate).toHaveBeenCalledWith("t1", "audit", "ui");
     expect(repo.create).toHaveBeenCalledWith("estimate", expect.objectContaining({ tenderId: "t1", mode: "audit" }), "ui");
   });
 
@@ -108,7 +110,7 @@ describe("режим задания: расчёт сметы и аудит см�
     for (const call of repo.create.mock.calls) {
       expect(call[1]).not.toHaveProperty("mode");
     }
-    expect(repo.findActiveEstimate).toHaveBeenNthCalledWith(1, "t1", "estimate");
+    expect(repo.findActiveEstimate).toHaveBeenNthCalledWith(1, "t1", "estimate", "ui");
   });
 
   it("идущий расчёт сметы не блокирует постановку аудита и наоборот", async () => {
@@ -143,14 +145,14 @@ describe("режим задания: расчёт сметы и аудит см�
     repo.findLatestEstimate.mockResolvedValue(row as never);
 
     const audit = await GET(new NextRequest("http://localhost/api/estimate?tenderId=t1&mode=audit"));
-    expect(repo.findLatestEstimate).toHaveBeenLastCalledWith("t1", "audit");
+    expect(repo.findLatestEstimate).toHaveBeenLastCalledWith("t1", "audit", "ui");
     const body = (await audit.json()) as { job: { mode: string; audit: unknown; estimate: unknown } };
     expect(body.job.mode).toBe("audit");
     expect(body.job.audit).toEqual({ reports: [], period: "3 квартал 2026 г." });
     expect(body.job.estimate).toBeNull();
 
     await GET(new NextRequest("http://localhost/api/estimate?tenderId=t1"));
-    expect(repo.findLatestEstimate).toHaveBeenLastCalledWith("t1", "estimate");
+    expect(repo.findLatestEstimate).toHaveBeenLastCalledWith("t1", "estimate", "ui");
   });
 });
 
@@ -200,5 +202,126 @@ describe("POST /api/estimate: условия работ", () => {
     expect((await POST(post({ tenderId: "t1", options: { winterWork: "MAYBE" } }))).status).toBe(400);
     expect((await POST(post({ tenderId: "t1", options: { workPeriod: { start: "01.09.2026", end: null } } }))).status).toBe(400);
     expect(repo.create).not.toHaveBeenCalled();
+  });
+});
+
+
+/*
+  Расчёт принадлежит тому, кто его поставил (20.10.2026). До этого GET ?jobId= отдавал любое задание по
+  номеру, а GET ?tenderId= — последнюю смету закупки от кого угодно: смета одного пользователя открывалась
+  у всех на карточке закупки. Теперь: свой — отдаётся, чужой — как несуществующий, администратор читает
+  любое по номеру, служебный запрос (почты нет) — тоже.
+*/
+describe("владелец расчёта: /api/estimate", () => {
+  const job = (overrides: Record<string, unknown> = {}) =>
+    ({
+      id: "job-9",
+      kind: "estimate",
+      status: "completed",
+      created_at: "2026-10-20T10:00:00Z",
+      finished_at: "2026-10-20T10:03:00Z",
+      error: null,
+      requested_by: "anna@firma.ru",
+      payload: { subject: "Объект Анны", reason: "upload", documents: [{ name: "ТЗ.docx", text: "СЕКРЕТНЫЙ ТЕКСТ" }] },
+      report: { estimate: { document: { totals: { total: 1 } } } },
+      ...overrides,
+    }) as never;
+
+  function as(email: string | null, url: string, init?: ConstructorParameters<typeof NextRequest>[1]): NextRequest {
+    const request = new NextRequest(url, init);
+    rememberRequestEmail(request, email);
+    return request;
+  }
+
+  const getJob = (email: string | null, id = "job-9") => GET(as(email, `http://localhost/api/estimate?jobId=${id}`));
+  const postJson = (email: string | null, body: unknown) =>
+    POST(as(email, "http://localhost/api/estimate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }));
+
+  it("свой расчёт по номеру отдаётся — без текстов присланных документов, но с именами файлов", async () => {
+    repo.findById.mockResolvedValue(job());
+
+    const response = await getJob("anna@firma.ru");
+    const body = (await response.json()) as { job: { id: string; subject: string; documentNames: string[] } };
+
+    expect(body.job.id).toBe("job-9");
+    expect(body.job.subject).toBe("Объект Анны");
+    expect(body.job.documentNames).toEqual(["ТЗ.docx"]);
+    expect(JSON.stringify(body)).not.toContain("СЕКРЕТНЫЙ ТЕКСТ");
+  });
+
+  it("чужой расчёт по номеру — {job: null}, как несуществующий: наличие не выдаётся", async () => {
+    repo.findById.mockResolvedValue(job());
+
+    const foreign = await getJob("boris@firma.ru");
+    repo.findById.mockResolvedValue(null);
+    const missing = await getJob("boris@firma.ru");
+
+    expect(foreign.status).toBe(200);
+    expect(await foreign.json()).toEqual({ job: null });
+    expect(await missing.json()).toEqual({ job: null });
+  });
+
+  it("почта сравнивается без учёта регистра и пробелов в базе", async () => {
+    repo.findById.mockResolvedValue(job({ requested_by: " Anna@Firma.ru " }));
+    expect(((await (await getJob("anna@firma.ru")).json()) as { job: unknown }).job).not.toBeNull();
+  });
+
+  it("задание не расчёта сметы (другой вид очереди) по этой ручке не отдаётся никому", async () => {
+    repo.findById.mockResolvedValue(job({ kind: "full_sync", requested_by: "anna@firma.ru" }));
+    expect(await (await getJob("anna@firma.ru")).json()).toEqual({ job: null });
+  });
+
+  it("администратор (ADMIN_EMAILS) читает чужой расчёт по номеру — по ссылке из письма о сбое", async () => {
+    vi.stubEnv("ADMIN_EMAILS", "owner@tender-fit.ru");
+    repo.findById.mockResolvedValue(job());
+
+    const body = (await (await getJob("owner@tender-fit.ru")).json()) as { job: { id: string } | null };
+    expect(body.job?.id).toBe("job-9");
+  });
+
+  it("служебный запрос без почты (воркер, ключ владельца, режим разработки) читает любое по номеру", async () => {
+    repo.findById.mockResolvedValue(job());
+    expect(((await (await getJob(null)).json()) as { job: { id: string } | null }).job?.id).toBe("job-9");
+  });
+
+  it("последняя смета закупки ищется среди расчётов самого пользователя — и у администратора тоже", async () => {
+    vi.stubEnv("ADMIN_EMAILS", "owner@tender-fit.ru");
+    repo.findLatestEstimate.mockResolvedValue(null);
+
+    await GET(as("anna@firma.ru", "http://localhost/api/estimate?tenderId=t1"));
+    expect(repo.findLatestEstimate).toHaveBeenLastCalledWith("t1", "estimate", "anna@firma.ru");
+
+    await GET(as("owner@tender-fit.ru", "http://localhost/api/estimate?tenderId=t1&mode=audit"));
+    expect(repo.findLatestEstimate).toHaveBeenLastCalledWith("t1", "audit", "owner@tender-fit.ru");
+  });
+
+  it("идущий расчёт закупки подхватывается только свой: чужой не склеивается с нажатием другого человека", async () => {
+    repo.findActiveEstimate.mockResolvedValue(null);
+
+    const response = await postJson("boris@firma.ru", { tenderId: "t1" });
+
+    expect(repo.findActiveEstimate).toHaveBeenCalledWith("t1", "estimate", "boris@firma.ru");
+    expect(((await response.json()) as { reused: boolean }).reused).toBe(false);
+    expect(repo.create).toHaveBeenCalledWith("estimate", expect.anything(), "boris@firma.ru");
+  });
+
+  it("загруженные файлы: в payload пишутся имена отдельным полем, чтобы список не читал тексты", async () => {
+    await postJson("anna@firma.ru", {
+      subject: "Объект",
+      documents: [
+        { name: "ТЗ.docx", text: "текст 1" },
+        { name: "Ведомость.xlsx", text: "текст 2" },
+      ],
+    });
+
+    const payload = repo.create.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(payload["documentNames"]).toEqual(["ТЗ.docx", "Ведомость.xlsx"]);
+    expect(payload["reason"]).toBe("upload");
+    expect(repo.findActiveEstimate).not.toHaveBeenCalled();
+  });
+
+  it("расчёт по закупке имён файлов в payload не пишет", async () => {
+    await postJson("anna@firma.ru", { tenderId: "t1" });
+    expect(repo.create.mock.calls[0]?.[1]).not.toHaveProperty("documentNames");
   });
 });

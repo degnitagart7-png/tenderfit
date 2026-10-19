@@ -192,13 +192,25 @@ export interface EstimateReadyInput {
   totalRub: number | null;
   /** Номер закупки; нет — смета посчитана на экране «Смета» без закупки. */
   tenderId: string | null;
+  /**
+   * Номер задания расчёта. Без закупки по нему письмо ведёт на `/estimate?job=<номер>` — прямо на этот
+   * результат, а не на пустой экран «Смета» с нуля. Нет — ссылка на экран без номера (письма старого вида).
+   */
+  jobId?: string | null;
   baseUrl?: string;
+}
+
+/** Ссылка на экран «Смета» с открытым расчётом. */
+export function estimateJobUrl(jobId: string | null | undefined, base: string): string {
+  return jobId === null || jobId === undefined || jobId === "" ? `${base}/estimate` : `${base}/estimate?job=${encodeURIComponent(jobId)}`;
 }
 
 export function buildEstimateReadyEmail(input: EstimateReadyInput): EmailMessage {
   const base = input.baseUrl ?? appBaseUrl();
   const subject = `Смета готова: ${shortSubject(input.subject)}`;
-  const url = input.tenderId !== null ? analysisUrl(input.tenderId, base) : `${base}/estimate`;
+  // Смета по закупке показывается на её карточке (там открывается последний расчёт самого получателя);
+  // смета по своим файлам — на экране «Смета», по номеру задания.
+  const url = input.tenderId !== null ? analysisUrl(input.tenderId, base) : estimateJobUrl(input.jobId, base);
   const label = input.tenderId !== null ? "Открыть закупку" : "Открыть смету";
   const object = input.subject.replace(/\s+/g, " ").trim();
   const total = input.totalRub !== null && input.totalRub > 0 ? `Итого с НДС: ${formatCurrency(input.totalRub)}` : null;
@@ -232,6 +244,8 @@ ${total === null ? "" : `<p style="margin:0 0 20px;font-size:15px;line-height:1.
  */
 export function buildFailureAlertEmail(input: {
   kind: "analysis" | "estimate";
+  /** Номер задания: у сметы по нему ссылка ведёт на расчёт (`/estimate?job=`), администратору открывается любой. */
+  id?: string;
   tenderId: string | null;
   subject: string | null;
   requestedBy: string | null;
@@ -241,14 +255,18 @@ export function buildFailureAlertEmail(input: {
   const what = input.kind === "analysis" ? "Глубокий анализ" : "Расчёт сметы";
   const object = input.subject !== null && input.subject.trim() !== "" ? shortSubject(input.subject) : input.tenderId ?? "без закупки";
   const subject = `ТендерФит: ${what.toLowerCase()} не удался — ${object}`;
-  const url = input.tenderId === null ? `${input.baseUrl}/estimate` : `${input.baseUrl}/tenders/${encodeURIComponent(input.tenderId)}?tab=analysis`;
+  const tenderUrl = input.tenderId === null ? null : `${input.baseUrl}/tenders/${encodeURIComponent(input.tenderId)}?tab=analysis`;
+  // Расчёт сметы — по номеру задания: на карточке закупки администратор видит только свои сметы, а
+  // расчёт клиента ему открывает именно `/estimate?job=` (владелец там не проверяется для админа).
+  const url = input.kind === "estimate" ? estimateJobUrl(input.id, input.baseUrl) : tenderUrl ?? `${input.baseUrl}/estimate`;
+  const buttonLabel = input.kind === "estimate" ? "Открыть расчёт" : "Открыть закупку";
   const who = input.requestedBy !== null && input.requestedBy.includes("@") ? input.requestedBy : "служебный запуск";
   const error = input.error.trim() === "" ? "причина не записана" : input.error.trim().slice(0, 600);
-  const text = [`${what} не удался.`, "", `Закупка: ${input.tenderId ?? "—"} ${input.subject ?? ""}`.trim(), `Запустил: ${who}`, `Причина: ${error}`, "", url].join("\n");
+  const text = [`${what} не удался.`, "", `Закупка: ${input.tenderId ?? "—"} ${input.subject ?? ""}`.trim(), `Запустил: ${who}`, `Причина: ${error}`, "", url, ...(input.kind === "estimate" && tenderUrl !== null ? [tenderUrl] : [])].join("\n");
   const body = `<h1 style="margin:0 0 8px;font-size:18px;font-weight:600;color:${INK};">${escapeHtml(what)} не удался</h1>
 <p style="margin:0 0 4px;font-size:14px;color:${INK};"><b>Закупка:</b> ${escapeHtml(input.tenderId ?? "—")} ${escapeHtml(input.subject ?? "")}</p>
 <p style="margin:0 0 4px;font-size:14px;color:${INK};"><b>Запустил:</b> ${escapeHtml(who)}</p>
 <p style="margin:0 0 16px;font-size:14px;color:${INK};"><b>Причина:</b> ${escapeHtml(error)}</p>
-${button(url, "Открыть закупку")}`;
+${button(url, buttonLabel)}`;
   return { subject, text, html: layout({ preheader: error, title: subject, body }) };
 }

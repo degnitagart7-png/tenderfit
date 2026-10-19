@@ -498,12 +498,12 @@ describe("syncJobRepository", () => {
       mockTable("sync_jobs", { data: null, error: null });
       const { syncJobRepository } = await import("./syncJobRepository");
 
-      await syncJobRepository.findActiveEstimate("t1", "audit");
+      await syncJobRepository.findActiveEstimate("t1", "audit", null);
       expect(allArgsOf("sync_jobs", "eq")).toContainEqual(["payload->>mode", "audit"]);
       expect(allArgsOf("sync_jobs", "or")).toEqual([]);
 
       calls.length = 0;
-      await syncJobRepository.findActiveEstimate("t1");
+      await syncJobRepository.findActiveEstimate("t1", "estimate", null);
       expect(allArgsOf("sync_jobs", "or")).toEqual([["payload->>mode.is.null,payload->>mode.eq.estimate"]]);
       expect(allArgsOf("sync_jobs", "eq").some((args) => args[0] === "payload->>mode")).toBe(false);
     });
@@ -512,23 +512,146 @@ describe("syncJobRepository", () => {
       mockTable("sync_jobs", { data: estimateRow({ tenderId: "t1", mode: "audit" }), error: null });
       const { syncJobRepository } = await import("./syncJobRepository");
 
-      const audit = await syncJobRepository.findLatestEstimate("t1", "audit");
+      const audit = await syncJobRepository.findLatestEstimate("t1", "audit", null);
       expect(audit?.payload).toMatchObject({ mode: "audit" });
       expect(allArgsOf("sync_jobs", "eq")).toContainEqual(["payload->>mode", "audit"]);
 
       calls.length = 0;
-      await syncJobRepository.findLatestEstimate("t1", "estimate");
+      await syncJobRepository.findLatestEstimate("t1", "estimate", null);
       expect(allArgsOf("sync_jobs", "or")).toHaveLength(1);
     });
 
     it("активное задание того же вида, но другого режима занятым не считается: фильтр режима обязателен в обоих вызовах", async () => {
       mockTable("sync_jobs", { data: null, error: null });
       const { syncJobRepository } = await import("./syncJobRepository");
-      await syncJobRepository.findActiveEstimate("t1", "audit");
+      await syncJobRepository.findActiveEstimate("t1", "audit", null);
       // Вид и закупка по-прежнему в запросе — режим только сужает.
       expect(allArgsOf("sync_jobs", "eq")).toContainEqual(["kind", "estimate"]);
       expect(allArgsOf("sync_jobs", "eq")).toContainEqual(["payload->>tenderId", "t1"]);
       expect(allArgsOf("sync_jobs", "in")[0]?.[1]).toEqual(["pending", "processing"]);
+    });
+  });
+
+  describe("задания estimate: расчёт принадлежит тому, кто его поставил (requested_by)", () => {
+    it("активное и последнее задание закупки отбираются по владельцу: чужой расчёт не подхватывается", async () => {
+      mockTable("sync_jobs", { data: null, error: null });
+      const { syncJobRepository } = await import("./syncJobRepository");
+
+      await syncJobRepository.findActiveEstimate("t1", "estimate", "anna@firma.ru");
+      expect(allArgsOf("sync_jobs", "eq")).toContainEqual(["requested_by", "anna@firma.ru"]);
+
+      calls.length = 0;
+      await syncJobRepository.findLatestEstimate("t1", "audit", "anna@firma.ru");
+      expect(allArgsOf("sync_jobs", "eq")).toContainEqual(["requested_by", "anna@firma.ru"]);
+      expect(allArgsOf("sync_jobs", "eq")).toContainEqual(["payload->>mode", "audit"]);
+    });
+
+    it("владелец null — без отбора (служебный код): requested_by в запрос не попадает", async () => {
+      mockTable("sync_jobs", { data: null, error: null });
+      const { syncJobRepository } = await import("./syncJobRepository");
+
+      await syncJobRepository.findLatestEstimate("t1", "estimate", null);
+      expect(allArgsOf("sync_jobs", "eq").some((args) => args[0] === "requested_by")).toBe(false);
+    });
+  });
+
+  describe("listEstimateHistory: «Мои расчёты»", () => {
+    const row = (overrides: Partial<Record<string, unknown>> = {}) => ({
+      id: "job-1",
+      status: "completed",
+      created_at: "2026-10-20T10:00:00.123456+00:00",
+      finished_at: "2026-10-20T10:05:00.000000+00:00",
+      error: null,
+      subject: "Ремонт кровли",
+      tender_id: null,
+      mode: null,
+      reason: "upload",
+      document_names: ["ТЗ.docx", "Ведомость.xlsx"],
+      total: "1250000.5",
+      ...overrides,
+    });
+
+    it("отбирает только расчёты сметы одного владельца, новые первыми, и не читает payload и report целиком", async () => {
+      mockTable("sync_jobs", { data: [row()], error: null });
+      const { syncJobRepository } = await import("./syncJobRepository");
+
+      await syncJobRepository.listEstimateHistory("anna@firma.ru", { limit: 21 });
+
+      expect(allArgsOf("sync_jobs", "eq")).toEqual([["kind", "estimate"], ["requested_by", "anna@firma.ru"]]);
+      expect(allArgsOf("sync_jobs", "order")).toEqual([
+        ["created_at", { ascending: false }],
+        ["id", { ascending: false }],
+      ]);
+      expect(allArgsOf("sync_jobs", "limit")).toEqual([[21]]);
+      expect(allArgsOf("sync_jobs", "lt")).toEqual([]);
+
+      const columns = String(allArgsOf("sync_jobs", "select")[0]?.[0]);
+      // Тексты файлов и вся смета в список не выбираются: только отдельные поля JSON.
+      expect(columns).not.toMatch(/(^|,\s*)(payload|report|\*)(\s*,|$)/);
+      expect(columns).not.toContain("payload->documents");
+      expect(columns).toContain("payload->documentNames");
+      expect(columns).toContain("report->estimate->document->totals->>total");
+    });
+
+    it("курсор before ограничивает created_at: следующая страница — строго старше последней показанной", async () => {
+      mockTable("sync_jobs", { data: [], error: null });
+      const { syncJobRepository } = await import("./syncJobRepository");
+
+      await syncJobRepository.listEstimateHistory("anna@firma.ru", { limit: 21, before: "2026-10-20T10:00:00.123456+00:00" });
+      expect(allArgsOf("sync_jobs", "lt")).toEqual([["created_at", "2026-10-20T10:00:00.123456+00:00"]]);
+    });
+
+    it("строка базы превращается в лёгкую запись: сумма — числом, имена файлов, режим и причина по умолчанию", async () => {
+      mockTable("sync_jobs", {
+        data: [
+          row(),
+          row({ id: "job-2", status: "failed", total: null, error: "  Воркер упал  ", document_names: null, mode: "audit", reason: null, tender_id: "0373100000126000001" }),
+        ],
+        error: null,
+      });
+      const { syncJobRepository } = await import("./syncJobRepository");
+
+      const [first, second] = await syncJobRepository.listEstimateHistory("anna@firma.ru", { limit: 21 });
+
+      expect(first).toEqual({
+        id: "job-1",
+        status: "completed",
+        createdAt: "2026-10-20T10:00:00.123456+00:00",
+        finishedAt: "2026-10-20T10:05:00.000000+00:00",
+        mode: "estimate",
+        reason: "upload",
+        tenderId: null,
+        subject: "Ремонт кровли",
+        documentNames: ["ТЗ.docx", "Ведомость.xlsx"],
+        totalRub: 1250000.5,
+        error: null,
+      });
+      expect(second).toMatchObject({
+        status: "failed",
+        mode: "audit",
+        reason: "tender",
+        tenderId: "0373100000126000001",
+        // Старое задание: имён нет — не пустой список, а «неизвестно».
+        documentNames: null,
+        totalRub: null,
+        error: "Воркер упал",
+      });
+    });
+
+    it("причина сбоя урезается, нулевая или нечисловая сумма — null", async () => {
+      mockTable("sync_jobs", { data: [row({ error: "x".repeat(500), total: "0" }), row({ id: "job-3", total: "n/a" })], error: null });
+      const { syncJobRepository } = await import("./syncJobRepository");
+
+      const [first, second] = await syncJobRepository.listEstimateHistory("anna@firma.ru", { limit: 5 });
+      expect(first?.error).toHaveLength(200);
+      expect(first?.totalRub).toBeNull();
+      expect(second?.totalRub).toBeNull();
+    });
+
+    it("ошибка базы пробрасывается", async () => {
+      mockTable("sync_jobs", { data: null, error: { message: "timeout" } });
+      const { syncJobRepository } = await import("./syncJobRepository");
+      await expect(syncJobRepository.listEstimateHistory("anna@firma.ru", { limit: 5 })).rejects.toEqual({ message: "timeout" });
     });
   });
 });

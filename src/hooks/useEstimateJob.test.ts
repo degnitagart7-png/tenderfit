@@ -106,3 +106,115 @@ describe("useEstimateJob: режим сметы прежний", () => {
     expect(result.current.result).toBeNull();
   });
 });
+
+describe("show и reset: показать расчёт, открытый из списка «Мои расчёты»", () => {
+  const done = (id: string, mode: "estimate" | "audit" = "estimate") => ({
+    id,
+    status: "completed" as const,
+    error: null,
+    mode,
+    estimate: mode === "estimate" ? (ESTIMATE as never) : null,
+    audit: mode === "audit" ? (AUDIT as never) : null,
+  });
+
+  it("готовое задание показывается сразу, без запросов; номер доступен для правок ведомости", () => {
+    const { result } = renderHook(() => useEstimateJob());
+
+    act(() => result.current.show(done("j10")));
+
+    expect(result.current.status).toBe("done");
+    expect(result.current.jobId).toBe("j10");
+    expect(result.current.result).toEqual(ESTIMATE);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("задание другого режима хук молча пропускает: им займётся хук второго режима", () => {
+    const { result } = renderHook(() => useEstimateJob());
+
+    act(() => result.current.show(done("j11", "audit")));
+
+    expect(result.current.status).toBe("idle");
+    expect(result.current.result).toBeNull();
+  });
+
+  it("идущее задание опрашивается по номеру до конца", async () => {
+    vi.useFakeTimers();
+    try {
+      fetchMock.mockResolvedValueOnce(respond({ job: done("j12") }));
+      const { result } = renderHook(() => useEstimateJob());
+
+      act(() => result.current.show({ id: "j12", status: "processing", error: null, mode: "estimate", estimate: null }));
+      expect(result.current.status).toBe("running");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+      expect(fetchMock.mock.calls[0]![0]).toBe("/api/estimate?jobId=j12");
+      expect(result.current.status).toBe("done");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("открыли другой расчёт, пока прежний считался: опрос прежнего обрывается и не затирает показанное", async () => {
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHook(() => useEstimateJob());
+      act(() => result.current.show({ id: "slow", status: "pending", error: null, mode: "estimate", estimate: null }));
+      act(() => result.current.show(done("fast")));
+
+      // Если бы цепочка опроса «slow» жила, она запросила бы его через пять секунд.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(12_000);
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(result.current.jobId).toBe("fast");
+      expect(result.current.status).toBe("done");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reset забывает показанное и обрывает опрос", async () => {
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHook(() => useEstimateJob());
+      act(() => result.current.show({ id: "j13", status: "pending", error: null, mode: "estimate", estimate: null }));
+
+      act(() => result.current.reset());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(12_000);
+      });
+
+      expect(result.current.status).toBe("idle");
+      expect(result.current.result).toBeNull();
+      expect(result.current.jobId).toBeNull();
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("start возвращает номер поставленного задания — по нему экран пишет адрес ?job=", async () => {
+    fetchMock.mockResolvedValueOnce(respond({ job: { id: "j14", status: "pending", error: null, estimate: null }, reused: false }));
+    const { result } = renderHook(() => useEstimateJob());
+
+    let id: string | null = null;
+    await act(async () => {
+      id = await result.current.start({ subject: "Объект", documents: [{ name: "a.txt", text: "x" }] });
+    });
+    expect(id).toBe("j14");
+  });
+
+  it("start, не поставивший задание, возвращает null", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: "Нет места" }), { status: 503 }));
+    const { result } = renderHook(() => useEstimateJob());
+
+    let id: string | null = "x";
+    await act(async () => {
+      id = await result.current.start({ tenderId: "t1" });
+    });
+    expect(id).toBeNull();
+    expect(result.current.error).toBe("Нет места");
+  });
+});

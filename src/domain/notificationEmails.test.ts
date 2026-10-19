@@ -5,6 +5,7 @@ import {
   buildAnalysisReadyEmail,
   buildDigestEmail,
   buildEstimateReadyEmail,
+  buildFailureAlertEmail,
   digestSubject,
   shortSubject,
 } from "@/domain/notificationEmails";
@@ -196,10 +197,54 @@ describe("buildEstimateReadyEmail", () => {
     expect(mail.text).toContain("https://tender-fit.ru/estimate");
   });
 
+  it("смета без закупки с номером задания — ссылка ведёт на этот расчёт, а не на пустой экран «Смета»", () => {
+    const mail = buildEstimateReadyEmail({ subject: "Моя смета", totalRub: 1_000_000, tenderId: null, jobId: "6f1c2a9e-0b7d-4e5a-9a3c-1d2e3f4a5b6c", baseUrl: BASE });
+
+    expect(mail.html).toContain('href="https://tender-fit.ru/estimate?job=6f1c2a9e-0b7d-4e5a-9a3c-1d2e3f4a5b6c"');
+    expect(mail.text).toContain("Открыть смету: https://tender-fit.ru/estimate?job=6f1c2a9e-0b7d-4e5a-9a3c-1d2e3f4a5b6c");
+  });
+
+  it("номер задания в ссылке кодируется", () => {
+    const mail = buildEstimateReadyEmail({ subject: "x", totalRub: null, tenderId: null, jobId: "a b&c", baseUrl: BASE });
+    expect(mail.text).toContain("/estimate?job=a%20b%26c");
+  });
+
+  it("смета по закупке — по-прежнему на карточку закупки, где открывается последний расчёт получателя", () => {
+    const mail = buildEstimateReadyEmail({ subject: "Ремонт", totalRub: null, tenderId: "0373100000126000001", jobId: "job-1", baseUrl: BASE });
+
+    expect(mail.html).toContain('href="https://tender-fit.ru/tenders/0373100000126000001?tab=analysis"');
+    expect(mail.html).not.toContain("estimate?job=");
+  });
+
   it("предмет экранируется", () => {
     const mail = buildEstimateReadyEmail({ subject: "<img src=x onerror=1>", totalRub: null, tenderId: null, baseUrl: BASE });
 
     expect(mail.html).not.toContain("<img");
     expect(mail.html).toContain("&lt;img");
+  });
+});
+
+describe("buildFailureAlertEmail", () => {
+  const base = { subject: "Ремонт кровли", requestedBy: "anna@firma.ru", error: "воркер упал", baseUrl: BASE };
+
+  it("сбой расчёта сметы: ссылка на расчёт по номеру задания (админу он открывается), закупка — второй строкой", () => {
+    const mail = buildFailureAlertEmail({ ...base, kind: "estimate", id: "job-77", tenderId: "0373100000126000001" });
+
+    expect(mail.html).toContain('href="https://tender-fit.ru/estimate?job=job-77"');
+    expect(mail.html).toContain("Открыть расчёт");
+    expect(mail.text).toContain("https://tender-fit.ru/estimate?job=job-77");
+    expect(mail.text).toContain("https://tender-fit.ru/tenders/0373100000126000001?tab=analysis");
+  });
+
+  it("сбой расчёта без закупки: ссылка только на расчёт", () => {
+    const mail = buildFailureAlertEmail({ ...base, kind: "estimate", id: "job-78", tenderId: null });
+    expect(mail.text).toContain("https://tender-fit.ru/estimate?job=job-78");
+    expect(mail.text).not.toContain("/tenders/");
+  });
+
+  it("сбой анализа — по-прежнему на закупку", () => {
+    const mail = buildFailureAlertEmail({ ...base, kind: "analysis", id: "job-79", tenderId: "0373100000126000001" });
+    expect(mail.html).toContain('href="https://tender-fit.ru/tenders/0373100000126000001?tab=analysis"');
+    expect(mail.html).toContain("Открыть закупку");
   });
 });

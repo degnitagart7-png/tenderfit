@@ -47,14 +47,23 @@ export interface AuditJobData {
 
 type JobMode = "estimate" | "audit";
 
-interface JobView {
+/** Задание в том виде, как его отдаёт `GET /api/estimate` (см. `describe` там же). */
+export interface EstimateJobView {
   id: string;
   status: "pending" | "processing" | "completed" | "failed";
   error: string | null;
   mode?: JobMode;
+  /** Шапка открытого из списка расчёта; у ответов без этих полей (старый вид) — нет. */
+  reason?: "upload" | "tender";
+  tenderId?: string | null;
+  subject?: string | null;
+  documentNames?: readonly string[] | null;
+  createdAt?: string;
   estimate: EstimateResultData | null;
   audit?: AuditJobData | null;
 }
+
+type JobView = EstimateJobView;
 
 export interface QueuedJobState<T> {
   readonly status: EstimateJobStatus;
@@ -64,7 +73,15 @@ export interface QueuedJobState<T> {
   readonly error: string | null;
   /** Задание уже стояло в очереди: второе нажатие не создало нового. */
   readonly reused: boolean;
-  readonly start: (body: EstimateJobRequest) => Promise<void>;
+  /** Номер поставленного задания; null — не поставилось (причина в `error`). */
+  readonly start: (body: EstimateJobRequest) => Promise<string | null>;
+  /**
+   * Показать уже существующее задание (открыто из списка «Мои расчёты» или по ссылке `?job=`): готовое
+   * выводится сразу, идущее — опрашивается до конца. Задание чужого режима молча игнорируется.
+   */
+  readonly show: (job: EstimateJobView) => void;
+  /** Забыть показанное: открыли расчёт другого режима, и этому хуку показывать нечего. */
+  readonly reset: () => void;
 }
 
 export interface EstimateJobState {
@@ -75,7 +92,12 @@ export interface EstimateJobState {
   readonly error: string | null;
   /** Задание уже стояло в очереди: второе нажатие не создало нового. */
   readonly reused: boolean;
-  readonly start: (body: EstimateJobRequest) => Promise<void>;
+  /** Номер поставленного задания; null — не поставилось (причина в `error`). */
+  readonly start: (body: EstimateJobRequest) => Promise<string | null>;
+  /** См. `QueuedJobState.show`. */
+  readonly show: (job: EstimateJobView) => void;
+  /** См. `QueuedJobState.reset`. */
+  readonly reset: () => void;
 }
 
 export interface EstimateJobRequest {
@@ -114,6 +136,13 @@ function useQueuedJob<T>(
   const jobId = useRef<string | null>(null);
   const [shownJobId, setShownJobId] = useState<string | null>(null);
   const alive = useRef(true);
+  /*
+    Поколение опроса. Опрос — цепочка таймеров, и если пользователь открыл другой расчёт или поставил
+    новый, пока прежний ещё считался, старая цепочка продолжала бы дёргать сервер и писать чужой
+    статус в экран. Каждый запуск показа увеличивает поколение, а цепочка прежнего поколения
+    обрывается на своём следующем шаге.
+  */
+  const epoch = useRef(0);
 
   useEffect(() => {
     alive.current = true;
@@ -143,19 +172,19 @@ function useQueuedJob<T>(
     return false;
   }, [mode, pick]);
 
-  const poll = useCallback(async (): Promise<void> => {
+  const poll = useCallback(async (generation: number): Promise<void> => {
     const id = jobId.current;
-    if (id === null || !alive.current) return;
+    if (id === null || !alive.current || generation !== epoch.current) return;
 
     try {
-      const response = await fetch(`/api/estimate?jobId=${id}`);
+      const response = await fetch(`/api/estimate?jobId=${encodeURIComponent(id)}`);
       const payload = await readJsonOrThrow<{ job?: JobView | null }>(response);
-      if (!alive.current) return;
+      if (!alive.current || generation !== epoch.current) return;
 
       const finished = apply(payload.job ?? null);
-      if (!finished) setTimeout(() => void poll(), POLL_MS);
+      if (!finished) setTimeout(() => void poll(generation), POLL_MS);
     } catch (err) {
-      if (!alive.current) return;
+      if (!alive.current || generation !== epoch.current) return;
       setStatus("failed");
       setError(err instanceof Error ? err.message : "Задание не читается");
     }
@@ -164,20 +193,23 @@ function useQueuedJob<T>(
   /*
     Открытая заново карточка показывает уже посчитанное. Без этого пользователь,
     вернувшийся к закупке через час, видел бы кнопку «Рассчитать смету» так,
-    будто расчёта не было, и платил бы за него второй раз.
+    будто расчёта не было, и платил бы за него второй раз. Показывается последний
+    расчёт самого пользователя: чужие сервер не отдаёт.
   */
   useEffect(() => {
     if (tenderId === undefined) return;
+    const generation = epoch.current;
     void (async () => {
       try {
         const response = await fetch(`/api/estimate?tenderId=${tenderId}${mode === "audit" ? "&mode=audit" : ""}`);
         const payload = await readJsonOrThrow<{ job?: JobView | null }>(response);
-        if (!alive.current) return;
+        // Пока ответ шёл, пользователь мог уже поставить расчёт: его не затираем.
+        if (!alive.current || generation !== epoch.current) return;
         const job = payload.job ?? null;
         if (job === null) return;
         jobId.current = job.id;
         const finished = apply(job);
-        if (!finished) setTimeout(() => void poll(), POLL_MS);
+        if (!finished) setTimeout(() => void poll(generation), POLL_MS);
       } catch {
         // Молча: это подгрузка прошлого результата, а не действие пользователя.
       }
@@ -185,7 +217,9 @@ function useQueuedJob<T>(
   }, [tenderId, mode, apply, poll]);
 
   const start = useCallback(
-    async (body: EstimateJobRequest): Promise<void> => {
+    async (body: EstimateJobRequest): Promise<string | null> => {
+      epoch.current += 1;
+      const generation = epoch.current;
       setStatus("queued");
       setError(null);
       setResult(null);
@@ -207,14 +241,43 @@ function useQueuedJob<T>(
         jobId.current = payload.job.id;
         setReused(payload.reused === true);
         const finished = apply(payload.job);
-        if (!finished) setTimeout(() => void poll(), POLL_MS);
+        if (!finished) setTimeout(() => void poll(generation), POLL_MS);
+        return payload.job.id;
       } catch (err) {
         setStatus("failed");
         setError(err instanceof Error ? err.message : "Задание не поставлено");
+        return null;
       }
     },
     [apply, poll, mode],
   );
 
-  return { status, jobId: shownJobId, result, error, reused, start };
+  const show = useCallback(
+    (job: JobView): void => {
+      // Чужой режим этому хуку не показывается (им займётся хук второго режима).
+      if ((job.mode ?? "estimate") !== mode) return;
+      epoch.current += 1;
+      const generation = epoch.current;
+      jobId.current = job.id;
+      setResult(null);
+      setShownJobId(null);
+      setError(null);
+      setReused(false);
+      const finished = apply(job);
+      if (!finished) setTimeout(() => void poll(generation), POLL_MS);
+    },
+    [apply, poll, mode],
+  );
+
+  const reset = useCallback((): void => {
+    epoch.current += 1;
+    jobId.current = null;
+    setStatus("idle");
+    setResult(null);
+    setShownJobId(null);
+    setError(null);
+    setReused(false);
+  }, []);
+
+  return { status, jobId: shownJobId, result, error, reused, start, show, reset };
 }

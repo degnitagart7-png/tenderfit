@@ -394,7 +394,7 @@ async function composeReadyMail(job: ReadyJob, email: string, deps: Notification
   }
   const subject =
     job.subject ?? (job.tenderId === null ? null : await deps.readTenderSubject(job.tenderId)) ?? job.tenderId ?? "Смета";
-  return buildEstimateReadyEmail({ subject, totalRub: job.totalRub, tenderId: job.tenderId, baseUrl });
+  return buildEstimateReadyEmail({ subject, totalRub: job.totalRub, tenderId: job.tenderId, jobId: job.id, baseUrl });
 }
 
 /* ----------------------------------- Боевые зависимости ----------------------------------- */

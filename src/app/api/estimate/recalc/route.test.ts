@@ -46,6 +46,7 @@ vi.mock("@/repositories/llmUsageRepository", () => ({
   llmUsageRepository: { insert: (...args: unknown[]) => logUsage(...args), record: (...args: unknown[]) => logUsage(...args) },
 }));
 
+import { rememberRequestEmail } from "@/app/api/auth/requestUser";
 import { POST } from "@/app/api/estimate/recalc/route";
 
 let counter = 0;
@@ -194,5 +195,53 @@ describe("POST /api/estimate/recalc", () => {
     const started = Date.now();
     await POST(post({ jobId: "job-h", edits: [{ kind: "price", anchor: anchorOf(wallsItem as Parameters<typeof anchorOf>[0]), unitPrice: 100 }] }));
     expect(Date.now() - started).toBeLessThan(1000);
+  });
+});
+
+/*
+  Пересчёт — только своего расчёта: ведомость и цены чужого — его смета. Владелец проверяется на каждом
+  запросе, и когда отчёт взят из кэша тоже: кэш ключуется номером задания.
+*/
+describe("POST /api/estimate/recalc: владелец расчёта", () => {
+  function postAs(email: string | null, jobId: string): NextRequest {
+    const request = post({ jobId, edits: [] });
+    rememberRequestEmail(request, email);
+    return request;
+  }
+
+  it("свой расчёт пересчитывается; чужой — 404 как несуществующий", async () => {
+    const { job } = await completedJob("job-own-1");
+    findById.mockResolvedValue({ ...job, requested_by: "anna@firma.ru" });
+
+    expect((await POST(postAs("anna@firma.ru", "job-own-1"))).status).toBe(200);
+
+    const { job: other } = await completedJob("job-own-2");
+    findById.mockResolvedValue({ ...other, requested_by: "anna@firma.ru" });
+    const foreign = await POST(postAs("boris@firma.ru", "job-own-2"));
+    expect(foreign.status).toBe(404);
+    expect(((await foreign.json()) as { error: string }).error).toBe("Расчёт не найден");
+  });
+
+  it("отчёт в кэше чужого не спасает: второй запрос другого человека по тому же номеру — тоже 404", async () => {
+    const { job } = await completedJob("job-own-3");
+    findById.mockResolvedValue({ ...job, requested_by: "anna@firma.ru" });
+
+    expect((await POST(postAs("anna@firma.ru", "job-own-3"))).status).toBe(200);
+    // Отчёт теперь в кэше; в базу второй запрос не идёт, но владелец сверяется всё равно.
+    findById.mockClear();
+    expect((await POST(postAs("boris@firma.ru", "job-own-3"))).status).toBe(404);
+    expect(findById).not.toHaveBeenCalled();
+    // И владелец по-прежнему получает ответ из кэша.
+    expect((await POST(postAs("anna@firma.ru", "job-own-3"))).status).toBe(200);
+  });
+
+  it("администратор пересчитывает любой; служебный запрос без почты — тоже", async () => {
+    vi.stubEnv("ADMIN_EMAILS", "owner@tender-fit.ru");
+    const { job } = await completedJob("job-own-4");
+    findById.mockResolvedValue({ ...job, requested_by: "anna@firma.ru" });
+
+    expect((await POST(postAs("owner@tender-fit.ru", "job-own-4"))).status).toBe(200);
+    expect((await POST(postAs(null, "job-own-4"))).status).toBe(200);
+    vi.unstubAllEnvs();
   });
 });

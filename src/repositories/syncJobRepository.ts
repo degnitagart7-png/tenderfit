@@ -1,4 +1,5 @@
 import { getSupabaseServerClient } from "@/lib/supabase";
+import { HISTORY_ERROR_CHARS, type EstimateHistoryItem, type EstimateHistoryStatus } from "@/domain/estimate/estimateHistory";
 import type {
   SyncJobKind,
   SyncJobPayload,
@@ -29,6 +30,76 @@ function withMode<Q extends ModeFilterable>(query: Q, mode: EstimateMode): Q {
       ? query.eq("payload->>mode", "audit")
       : query.or("payload->>mode.is.null,payload->>mode.eq.estimate")
   ) as Q;
+}
+
+interface OwnerFilterable {
+  eq(column: string, value: string): unknown;
+}
+
+/** Отбор заданий одного владельца (`requested_by`). `null` — без отбора: служебный код, не от имени человека. */
+function withOwner<Q extends OwnerFilterable>(query: Q, requestedBy: string | null): Q {
+  return (requestedBy === null ? query : query.eq("requested_by", requestedBy)) as Q;
+}
+
+/**
+ * Колонки и JSON-пути списка «Мои расчёты». Только лёгкое: `payload` и `report` целиком не
+ * читаются (тексты файлов и смета на мегабайты), а берутся отдельные поля через `->>` и `->`.
+ * Итог — тот же путь, что у письма «смета готова» (`notificationRepository.listReadyJobs`).
+ *
+ * Оговорка по нагрузке: проекция JSON-поля экономит трафик, но не работу базы — Postgres
+ * вынимает `payload` и `report` строки целиком, чтобы достать из них поле. Поэтому страница
+ * небольшая (20 строк), а выборка идёт по индексу (`requested_by`, `created_at`).
+ */
+const HISTORY_SELECT = [
+  "id",
+  "status",
+  "created_at",
+  "finished_at",
+  "error",
+  "subject:payload->>subject",
+  "tender_id:payload->>tenderId",
+  "mode:payload->>mode",
+  "reason:payload->>reason",
+  "document_names:payload->documentNames",
+  "total:report->estimate->document->totals->>total",
+].join(", ");
+
+interface HistoryDbRow {
+  id: string;
+  status: EstimateHistoryStatus;
+  created_at: string;
+  finished_at: string | null;
+  error: string | null;
+  subject: string | null;
+  tender_id: string | null;
+  mode: string | null;
+  reason: string | null;
+  document_names: unknown;
+  total: unknown;
+}
+
+function toHistoryItem(row: HistoryDbRow): EstimateHistoryItem {
+  const names = Array.isArray(row.document_names)
+    ? row.document_names.filter((name): name is string => typeof name === "string")
+    : null;
+  // PostgREST отдаёт число по пути `->>` строкой; нет суммы или не число — null.
+  const total = typeof row.total === "string" ? Number(row.total) : row.total;
+  const error = typeof row.error === "string" && row.error.trim() !== "" ? row.error.trim().slice(0, HISTORY_ERROR_CHARS) : null;
+  const tenderId = row.tender_id !== null && row.tender_id !== "" ? row.tender_id : null;
+  return {
+    id: row.id,
+    status: row.status,
+    createdAt: row.created_at,
+    finishedAt: row.finished_at,
+    mode: row.mode === "audit" ? "audit" : "estimate",
+    // Задания без `reason` — поставленные по закупке (так их ставили, пока не было экрана «Смета»).
+    reason: row.reason === "upload" ? "upload" : "tender",
+    tenderId,
+    subject: row.subject,
+    documentNames: names,
+    totalRub: typeof total === "number" && Number.isFinite(total) && total > 0 ? total : null,
+    error,
+  };
 }
 
 /**
@@ -125,12 +196,24 @@ export const syncJobRepository = {
    *
    * Нужна, чтобы повторное нажатие кнопки не ставило второе задание: расчёт
    * стоит минут работы модели, и платить за один ответ дважды незачем.
+   *
+   * `requestedBy` — чьё задание искать (почта или метка «ui»), обязательный: чужой
+   * идущий расчёт по той же закупке не должен «склеиваться» с нажатием другого человека
+   * — тот получил бы чужой результат и не получил бы своего. `null` — любое (только
+   * для служебного кода, который не от имени человека).
    */
-  async findActiveEstimate(tenderId: string, mode: EstimateMode = "estimate"): Promise<SyncJobRow | null> {
+  async findActiveEstimate(
+    tenderId: string,
+    mode: EstimateMode,
+    requestedBy: string | null,
+  ): Promise<SyncJobRow | null> {
     const supabase = getSupabaseServerClient();
-    const { data, error } = await withMode(
-      supabase.from("sync_jobs").select("*").eq("kind", "estimate").eq("payload->>tenderId", tenderId),
-      mode,
+    const { data, error } = await withOwner(
+      withMode(
+        supabase.from("sync_jobs").select("*").eq("kind", "estimate").eq("payload->>tenderId", tenderId),
+        mode,
+      ),
+      requestedBy,
     )
       .in("status", ["pending", "processing"])
       .order("created_at", { ascending: false })
@@ -193,13 +276,21 @@ export const syncJobRepository = {
    * Последняя смета по закупке, в любом состоянии.
    *
    * По ней открытая заново карточка показывает уже посчитанное, а не
-   * предлагает считать второй раз.
+   * предлагает считать второй раз. `requestedBy` — чья смета (см. `findActiveEstimate`):
+   * у каждого на карточке закупки свой результат, чужой не подставляется.
    */
-  async findLatestEstimate(tenderId: string, mode: EstimateMode = "estimate"): Promise<SyncJobRow | null> {
+  async findLatestEstimate(
+    tenderId: string,
+    mode: EstimateMode,
+    requestedBy: string | null,
+  ): Promise<SyncJobRow | null> {
     const supabase = getSupabaseServerClient();
-    const { data, error } = await withMode(
-      supabase.from("sync_jobs").select("*").eq("kind", "estimate").eq("payload->>tenderId", tenderId),
-      mode,
+    const { data, error } = await withOwner(
+      withMode(
+        supabase.from("sync_jobs").select("*").eq("kind", "estimate").eq("payload->>tenderId", tenderId),
+        mode,
+      ),
+      requestedBy,
     )
       .order("created_at", { ascending: false })
       .limit(1)
@@ -210,6 +301,34 @@ export const syncJobRepository = {
       throw error;
     }
     return (data as SyncJobRow | null) ?? null;
+  },
+
+  /**
+   * Расчёты сметы одного человека, от нового к старому (список «Мои расчёты»).
+   *
+   * Страницы по ключу `created_at`, а не по смещению: пока человек листает, наверх приходят новые
+   * расчёты, и смещение показало бы одну и ту же строку дважды. `before` — `created_at` последней
+   * строки предыдущей страницы как строка из базы (с микросекундами). Читает `limit` строк;
+   * вызывающий просит на одну больше, чтобы узнать, есть ли следующая страница.
+   */
+  async listEstimateHistory(
+    requestedBy: string,
+    options: { limit: number; before?: string | null },
+  ): Promise<EstimateHistoryItem[]> {
+    const supabase = getSupabaseServerClient();
+    let query = supabase
+      .from("sync_jobs")
+      .select(HISTORY_SELECT)
+      .eq("kind", "estimate")
+      .eq("requested_by", requestedBy);
+    if (options.before !== undefined && options.before !== null) query = query.lt("created_at", options.before);
+    const { data, error } = await query
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
+      .limit(options.limit);
+
+    if (error) throw error;
+    return ((data ?? []) as unknown as HistoryDbRow[]).map(toHistoryItem);
   },
 
   /** Последние задания — для журнала на панели. */

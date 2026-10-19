@@ -1,8 +1,10 @@
 import { requireAccess } from "@/app/api/auth/requireAccess";
-import { recordRequestEvent, requestEmail } from "@/app/api/auth/requestUser";
+import { recordRequestEvent } from "@/app/api/auth/requestUser";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
+import { estimateViewer } from "@/app/api/estimate/viewer";
+import { canReadEstimateJob, ownerKey } from "@/domain/estimate/jobOwnership";
 import { describeError } from "@/lib/errors";
 import { resolveWorkerId } from "@/domain/workerStatus";
 import { estimateOptionsSchema, hasEstimateOptions, normalizeEstimateOptions } from "@/domain/estimate/estimateOptions";
@@ -27,7 +29,12 @@ import type { SyncJobRow } from "@/types/database";
  *
  * Повторное нажатие не плодит заданий: если по закупке уже считается смета,
  * возвращается то же задание. Расчёт стоит минут работы модели, и запускать его
- * дважды по одной кнопке — платить дважды за один ответ.
+ * дважды по одной кнопке — платить дважды за один ответ. Но только своё: идущий расчёт
+ * другого человека по той же закупке не подхватывается (см. `domain/estimate/jobOwnership`).
+ *
+ * Расчёт принадлежит тому, кто его поставил. Чужое задание по номеру не отдаётся (ответ как
+ * для несуществующего), «последняя смета закупки» — последняя смета этого человека. Список
+ * своих расчётов — `GET /api/estimate/history`.
  */
 
 const documentSchema = z.object({
@@ -56,6 +63,10 @@ const requestSchema = z.object({
 
 /** Сколько текста принимаем в одном задании: дальше упрёмся в размер строки. */
 const MAX_TOTAL_CHARS = 2_000_000;
+
+/** Имена файлов в `payload.documentNames`: список в экране читается глазами, архив из сотен файлов ему ни к чему. */
+const MAX_NAMES = 50;
+const MAX_NAME_CHARS = 200;
 
 /**
  * С какой версии воркер умеет считать смету.
@@ -176,9 +187,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       return NextResponse.json({ error: worker.reason }, { status: 503 });
     }
 
-    // Закупка считается одна: повтор нажатия возвращает то же задание.
+    // Закупка считается одна: повтор нажатия возвращает то же задание — но своё, не чужое.
+    const owner = ownerKey(estimateViewer(request));
     if (tenderId !== undefined && !hasDocuments) {
-      const running = await syncJobRepository.findActiveEstimate(tenderId, mode);
+      const running = await syncJobRepository.findActiveEstimate(tenderId, mode, owner);
       if (running !== null) {
         return NextResponse.json({ job: describe(running), reused: true });
       }
@@ -190,6 +202,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         ...(tenderId === undefined ? {} : { tenderId }),
         ...(subject === undefined ? {} : { subject }),
         ...(hasDocuments ? { documents } : {}),
+        // Имена файлов отдельным полем: список «Мои расчёты» читает их, не трогая тексты (`payload.documents`).
+        ...(hasDocuments ? { documentNames: documents.map((item) => item.name.slice(0, MAX_NAME_CHARS)).slice(0, MAX_NAMES) } : {}),
         ...(priceZoneId === undefined ? {} : { priceZoneId }),
         // Пустой выбор в задание не пишется: так оно совпадает с заданиями, поставленными раньше.
         ...(hasEstimateOptions(options) ? { estimateOptions: options } : {}),
@@ -197,9 +211,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         ...(mode === "estimate" ? {} : { mode }),
         reason: hasDocuments ? "upload" : "tender",
       },
-      // Вошедший записывается по почте (расход на ИИ и сбои задания видны в /admin/users);
-      // служебный запрос остаётся с меткой «ui», как было.
-      requestEmail(request) ?? "ui",
+      // Вошедший записывается по почте (расход на ИИ и сбои задания видны в /admin/users, а
+      // «Мои расчёты» отбираются по ней же); служебный запрос остаётся с меткой «ui», как было.
+      owner,
     );
 
     recordRequestEvent(request, {
@@ -220,6 +234,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
  *
  * Второй случай нужен, чтобы открытая заново карточка показывала уже
  * посчитанную смету, а не предлагала считать её второй раз.
+ *
+ * Оба — только по своим расчётам. Задание другого человека по номеру не отдаётся и не
+ * выдаёт себя: ответ тот же `{ job: null }`, что и для несуществующего. Исключение —
+ * администратор (ссылка из письма о сбое ведёт на расчёт клиента) и служебный запрос.
  */
 export async function GET(request: NextRequest): Promise<NextResponse> {
   const denied = await requireAccess(request);
@@ -238,10 +256,15 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   }
 
   try {
-    const job =
-      jobId !== null
-        ? await syncJobRepository.findById(jobId)
-        : await syncJobRepository.findLatestEstimate(tenderId ?? "", mode);
+    const viewer = estimateViewer(request);
+    let job: SyncJobRow | null;
+    if (jobId !== null) {
+      job = await syncJobRepository.findById(jobId);
+      // Чужое и не расчёт сметы (другой вид задания) — как будто такого нет.
+      if (job !== null && (job.kind !== "estimate" || !canReadEstimateJob(viewer, job.requested_by))) job = null;
+    } else {
+      job = await syncJobRepository.findLatestEstimate(tenderId ?? "", mode, ownerKey(viewer));
+    }
 
     if (job === null) return NextResponse.json({ job: null });
     return NextResponse.json({ job: describe(job) });
@@ -265,6 +288,11 @@ function describe(job: SyncJobRow) {
     finishedAt: job.finished_at,
     error: job.error,
     mode: job.payload?.mode ?? "estimate",
+    // Шапка открытого из списка расчёта: что считали и по чему.
+    reason: job.payload?.reason === "upload" ? "upload" : "tender",
+    tenderId: job.payload?.tenderId ?? null,
+    subject: job.payload?.subject ?? null,
+    documentNames: job.payload?.documentNames ?? job.payload?.documents?.map((item) => item.name) ?? null,
     estimate: job.report?.estimate ?? null,
     audit: job.report?.audit ?? null,
   };

@@ -120,6 +120,15 @@ describe("runReadyNotifications", () => {
     expect(sent[0]?.html).toContain("https://tender-fit.ru/estimate");
   });
 
+  it("смета без закупки: письмо ведёт на этот расчёт — /estimate?job=<номер задания>", async () => {
+    const { deps, sent } = setup({}, { jobs: [job({ kind: "estimate", id: "e-77", tenderId: null, subject: "Объект" })] });
+
+    await runReadyNotifications(deps);
+
+    expect(sent[0]?.html).toContain('href="https://tender-fit.ru/estimate?job=e-77"');
+    expect(sent[0]?.text).toContain("https://tender-fit.ru/estimate?job=e-77");
+  });
+
   it("аудит сметы заказчика — не «смета готова»: письма нет, задача закрыта", async () => {
     const { deps, sent, claimed } = setup({}, { jobs: [job({ kind: "estimate", id: "e3", mode: "audit" })] });
 
@@ -594,6 +603,16 @@ describe("runFailureAlerts: сбой задачи — письмо админи�
 
     const again = await runFailureAlerts(deps);
     expect(again.sent).toBe(0);
+  });
+
+  it("сбой расчёта сметы: администратору — ссылка на расчёт по номеру задания", async () => {
+    const estimateFailed = { kind: "estimate" as const, id: "est-f", tenderId: null, requestedBy: "client@firma.ru", error: "нет зоны", at: NOW - MIN };
+    const { deps, sent } = setup({ env: { ADMIN_EMAILS: ADMIN }, listFailedJobs: vi.fn(async () => [estimateFailed]) });
+
+    await runFailureAlerts(deps);
+
+    expect(sent[0]!.text).toContain("https://tender-fit.ru/estimate?job=est-f");
+    expect(sent[0]!.html).toContain("Открыть расчёт");
   });
 
   it("NOTIFY_RECIPIENTS=off или нет администраторов — ничего не шлётся", async () => {

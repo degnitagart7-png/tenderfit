@@ -276,8 +276,11 @@ export const notificationRepository = {
 
     const { data: estimates, error: estimateError } = await client
       .from("sync_jobs")
-      // Итог берётся путём JSON: отчёт сметы весит мегабайты (ресурсные строки), а письму нужна одна сумма.
-      .select("id, requested_by, payload, total:report->estimate->document->totals->>total, created_at, finished_at")
+      // Итог и поля задания берутся путями JSON: отчёт сметы весит мегабайты (ресурсные строки), а в
+      // `payload.documents` лежат тексты присланных файлов; письму нужны сумма, объект и номер закупки.
+      .select(
+        "id, requested_by, subject:payload->>subject, tender_id:payload->>tenderId, mode:payload->>mode, total:report->estimate->document->totals->>total, created_at, finished_at",
+      )
       .eq("kind", "estimate")
       .eq("status", "completed")
       .is("notified_at", null)
@@ -289,7 +292,9 @@ export const notificationRepository = {
       | {
           id: string;
           requested_by: string;
-          payload: { tenderId?: string; subject?: string; mode?: string } | null;
+          subject: string | null;
+          tender_id: string | null;
+          mode: string | null;
           total: unknown;
           created_at: string;
           finished_at: string | null;
@@ -304,9 +309,9 @@ export const notificationRepository = {
         requestedBy: row.requested_by.trim().toLowerCase(),
         createdAt: created,
         finishedAt: finished,
-        tenderId: row.payload?.tenderId ?? null,
-        subject: row.payload?.subject ?? null,
-        mode: row.payload?.mode === "audit" ? "audit" : "estimate",
+        tenderId: row.tender_id ?? null,
+        subject: row.subject ?? null,
+        mode: row.mode === "audit" ? "audit" : "estimate",
         totalRub: estimateTotal(row.total),
       });
     }
@@ -347,7 +352,7 @@ export const notificationRepository = {
     }
     const { data: estimates, error: estimateError } = await client
       .from("sync_jobs")
-      .select("id, requested_by, payload, error, finished_at, updated_at")
+      .select("id, requested_by, tender_id:payload->>tenderId, error, finished_at, updated_at")
       .eq("kind", "estimate")
       .eq("status", "failed")
       .is("notified_at", null)
@@ -355,12 +360,12 @@ export const notificationRepository = {
       .limit(50);
     fail(estimateError);
     for (const row of (estimates as
-      | { id: string; requested_by: string | null; payload: { tenderId?: string | null } | null; error: string | null; finished_at: string | null; updated_at: string }[]
+      | { id: string; requested_by: string | null; tender_id: string | null; error: string | null; finished_at: string | null; updated_at: string }[]
       | null) ?? []) {
       jobs.push({
         kind: "estimate",
         id: row.id,
-        tenderId: row.payload?.tenderId ?? null,
+        tenderId: row.tender_id ?? null,
         requestedBy: row.requested_by,
         error: row.error ?? "",
         at: ms(row.finished_at) ?? ms(row.updated_at) ?? sinceMs,
