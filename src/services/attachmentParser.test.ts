@@ -4,6 +4,7 @@ import * as XLSX from "xlsx";
 import {
   detectFileType,
   fileExtension,
+  isArchiveJunk,
   parseArchiveVolumes,
   parseAttachment,
   sniffFileType,
@@ -819,3 +820,34 @@ describe("parseAttachment — вложенные архивы", () => {
     expect(result.text).not.toContain(LONG_TEXT.slice(0, 40));
   });
 });
+
+describe("isArchiveJunk: служебные входы архива", () => {
+  it("отсеивает файлы блокировки Word, миниатюры, подписи и __MACOSX", () => {
+    for (const name of [
+      "Приложение 1/~$иложение 1 Задание.DOCX",
+      "~$хническое задание.doc",
+      "Чертежи/Thumbs.db",
+      "desktop.ini",
+      "папка/.DS_Store",
+      "Извещение.pdf.sig",
+      "Документация.docx.sign",
+      "ТЗ.p7s",
+      "__MACOSX/ТЗ.docx",
+    ]) {
+      expect(isArchiveJunk(name), name).toBe(true);
+    }
+  });
+
+  it("настоящие документы не трогает", () => {
+    for (const name of [
+      "Техническое задание.docx",
+      "Смета ~ раздел 2.xlsx",
+      "signal/ТЗ.pdf",
+      "Подписи сторон.docx",
+      "ЛСР 02-01-01.xlsx",
+    ]) {
+      expect(isArchiveJunk(name), name).toBe(false);
+    }
+  });
+});
+

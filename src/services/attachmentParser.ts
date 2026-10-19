@@ -562,6 +562,23 @@ function innerSkipReason(inner: ParsedAttachment): string {
  * лимитов на два формата разошлись бы через месяц, и партнёр увидел бы, что
  * одна и та же документация читается по-разному в зависимости от упаковки.
  */
+/**
+ * Служебные файлы архива, которые документами не являются: временный файл блокировки
+ * Word («~$Техническое задание.docx» — 162 байта с именем пользователя), миниатюры и
+ * настройки папки Windows и macOS, открепленные электронные подписи (.sig, .sign, .p7s).
+ *
+ * Зачем. Они считались входами архива и попадали в «не прочитано»: замер 19.10.2026 по
+ * 57 перечитанным архивам — из 15 «битых» документов Word 9 были файлами «~$…», ещё
+ * 11 входов — Thumbs.db, 9 — подписи. Партнёр видел «прочитано 3 из 5» и список
+ * «непрочитанных» там, где прочитано всё, что можно прочитать. Такие входы не читаются
+ * и не учитываются ни в total, ни в списке пропусков.
+ */
+const ARCHIVE_JUNK_NAME = /(?:^|\/)(?:~\$[^/]*|thumbs\.db|desktop\.ini|\.ds_store|[^/]*\.(?:sig|sign|p7s))$|(?:^|\/)__macosx\//i;
+
+export function isArchiveJunk(name: string): boolean {
+  return ARCHIVE_JUNK_NAME.test(name);
+}
+
 async function readArchive(
   entries: readonly ArchiveEntry[],
   budgetChars: number,
@@ -569,7 +586,7 @@ async function readArchive(
   ctx: ParseContext,
   limits: ArchiveLimits = MEMORY_LIMITS,
 ): Promise<ParsedAttachment> {
-  const sorted = [...entries].sort((left, right) =>
+  const sorted = entries.filter((entry) => !isArchiveJunk(entry.name)).sort((left, right) =>
     left.name.localeCompare(right.name),
   );
   const names = sorted.map((entry) => entry.name);
