@@ -203,7 +203,9 @@ export function createSearchAssist(chat: ChatFn) {
         candidates,
       });
       // Токенов на ответ: около сорока на закупку с причиной, с запасом.
-      const answer = await chat(prompt, 120 + candidates.length * 60, { purpose: "rerank" });
+      // Без «размышлений»: ответ — короткий JSON с вердиктами, а рассуждения модели оплачиваются как выход.
+      // Замер 16–20.10.2026: у Gemini 2.5 Flash ~1000 выходных токенов на вызов при ~40 на закупку в ответе.
+      const answer = await chat(prompt, 120 + candidates.length * 60, { purpose: "rerank" }, { reasoning: false });
       const verdicts = parseRerank(answer.content, candidates);
       if (Object.keys(verdicts).length > 0) rerankCache.set(key, verdicts);
       return { verdicts, cached: false, tokens: answer.tokens };
