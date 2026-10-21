@@ -191,6 +191,8 @@ const PURPOSE_LABELS: Record<string, string> = {
   estimate_implied: "смета, работы по технологии ИИ (estimate_implied)",
   search_assist: "помощник поиска (search_assist)",
   rerank: "оценка по смыслу (rerank)",
+  company_facts: "факты компании из документов (company_facts)",
+  company_fit: "соответствие компании закупке (company_fit)",
   other: "прочее (other)",
 };
 

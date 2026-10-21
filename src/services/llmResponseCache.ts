@@ -35,8 +35,12 @@ export const LLM_CACHE_TTL_MS = 60 * 24 * 60 * 60 * 1000;
 /** Столько ждём базу кэша; дольше — считаем промахом: кэш не должен быть медленнее вызова, который заменяет. */
 export const LLM_CACHE_IO_TIMEOUT_MS = 3_000;
 
-/** Виды работы, которые кэшируются: смета. Поиск и глубокий анализ — нет (у поиска свой кэш, у анализа — свои правила). */
-export const CACHEABLE_PURPOSES: readonly LlmPurpose[] = ["estimate_bill", "estimate_norm_pick", "estimate_implied"];
+/**
+ * Виды работы, которые кэшируются: смета и факты компании. Поиск и глубокий анализ — нет (у поиска свой кэш, у анализа — свои правила).
+ * Факты компании (`company_facts`): ключ — хэш полного запроса, а в запросе только очищенный от ПД текст; тот же набор документов
+ * после «Обновить профиль» не оплачивается второй раз. Соответствие закупке (`company_fit`) кэшируется своей таблицей.
+ */
+export const CACHEABLE_PURPOSES: readonly LlmPurpose[] = ["estimate_bill", "estimate_norm_pick", "estimate_implied", "company_facts"];
 
 export function isCacheablePurpose(purpose: LlmPurpose): boolean {
   return CACHEABLE_PURPOSES.includes(purpose);

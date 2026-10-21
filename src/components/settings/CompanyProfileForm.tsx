@@ -23,6 +23,8 @@ import {
 import { DocumentUploader } from "@/components/settings/DocumentUploader";
 import { CostProfileEditor } from "@/components/estimate/CostProfileEditor";
 import { DEFAULT_COST_PROFILE } from "@/domain/estimate/companyCostProfile";
+import { CompanyFactsSection } from "@/components/settings/CompanyFactsSection";
+import type { CompanyFacts } from "@/domain/companyFacts/types";
 import { cn } from "@/lib/cn";
 import { ProfileAuditNotice } from "@/components/settings/ProfileAuditNotice";
 
@@ -54,25 +56,45 @@ export function CompanyProfileForm({ initial }: { initial: CompanyProfile }) {
   const patchPreferences = (p: Partial<CompanyProfile["preferences"]>) =>
     patch({ preferences: { ...profile.preferences, ...p } });
 
-  const save = () => {
-    // Согласие проверяется первым: профиль содержит ИНН и наименование, а для
-    // индивидуального предпринимателя это персональные данные — сохранять их
-    // без правового основания нельзя.
+  /**
+   * Сохраняет анкету `next`: согласие и ИНН проверяются первыми (профиль содержит ИНН и наименование, а для
+   * индивидуального предпринимателя это персональные данные — сохранять их без правового основания нельзя).
+   * Возвращает, сохранена ли анкета: так же сохраняются факты из документов (`commitFacts`), и раздел документов
+   * говорит человеку, если сохранить не удалось.
+   */
+  const persist = (next: CompanyProfile): boolean => {
     if (!consent) {
       setConsentError(true);
-      return;
+      return false;
     }
-    const res = innSchema.safeParse(profile.inn);
+    const res = innSchema.safeParse(next.inn);
     if (!res.success) {
       setInnError(res.error.issues[0]?.message ?? "Некорректный ИНН");
-      return;
+      return false;
     }
     setInnError(null);
     setConsentError(false);
     saveConsent();
-    companyProfileRepository.save(profile);
+    companyProfileRepository.save(next);
     void accountSync.pushIfSignedIn();
     setSaved(true);
+    return true;
+  };
+
+  const save = () => {
+    persist(profile);
+  };
+
+  /**
+   * Факты из документов получены или поправлены: кладём их в анкету и сразу сохраняем — сверку с закупкой делает сервер
+   * по сохранённой анкете, и факты, оставшиеся только на экране, до неё бы не дошли.
+   */
+  const commitFacts = (facts: CompanyFacts | undefined): boolean => {
+    const { companyFacts: _previous, ...rest } = profile;
+    void _previous;
+    const next: CompanyProfile = facts === undefined ? rest : { ...rest, companyFacts: facts };
+    setProfile(next);
+    return persist(next);
   };
 
   return (
@@ -492,10 +514,14 @@ export function CompanyProfileForm({ initial }: { initial: CompanyProfile }) {
         </div>
       </Card>
 
-      <Card title="Документы компании">
-        <DocumentUploader
+      <Card title="Документы компании для анализа">
+        <CompanyFactsSection
           documents={profile.documents}
-          onChange={(documents) => patch({ documents })}
+          onDocumentsChange={(documents) => patch({ documents })}
+          facts={profile.companyFacts}
+          onFactsChange={commitFacts}
+          companyInn={profile.inn}
+          companyName={profile.legalName}
         />
       </Card>
     </div>

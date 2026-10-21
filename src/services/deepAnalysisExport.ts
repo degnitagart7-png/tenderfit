@@ -37,6 +37,8 @@ export interface DeepAnalysisExportInput {
   generatedAt: Date;
   tender?: Tender | null;
   profileMatch?: ProfileMatch | null;
+  /** «Соответствие вашей компании» — раздел отчёта для этого пользователя; нет — раздела нет. */
+  companyFit?: DeepAnalysisReportInput["companyFit"];
   bidEconomics?: BidEconomics | null;
   vatStatus?: VatStatus | null;
   customerComparison?: CustomerComparison | null;

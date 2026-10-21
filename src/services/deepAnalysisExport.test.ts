@@ -272,3 +272,33 @@ describe("buildDeepAnalysisDocx: таблица из пяти колонок", (
     expect(body).not.toContain("<w:t xml:space=\"preserve\"></w:t>");
   });
 });
+
+describe("buildDeepAnalysisDocx: соответствие вашей компании", () => {
+  it("раздел с таблицей вердиктов собирается в настоящий .docx", async () => {
+    const bytes = await buildDeepAnalysisDocx({
+      regNumber: "0373100012826000123",
+      subject: "Капитальный ремонт кровли",
+      summary: summary(),
+      generatedAt: new Date("2026-10-21T12:00:00Z"),
+      companyFit: {
+        version: 1,
+        tenderId: "0373100012826000123",
+        computedAt: "2026-10-21T12:00:00.000Z",
+        overall: "no_fit",
+        headline: "Не подходит по 1 из 2 требований",
+        summary: "Нет автовышки.",
+        requirements: [
+          { id: "r1", kind: "EXPERIENCE", title: "Опыт", required: "20% НМЦК", verdict: "ok", basis: "Выполнено.", source: "rule", contractIds: [], quote: "цитата" },
+          { id: "r2", kind: "EQUIPMENT", title: "Автовышка", required: null, verdict: "fail", basis: "Нет техники.", source: "rule", contractIds: [], quote: null },
+        ],
+        experience: [{ contractId: "c1", subject: "Ремонт кровли школы", customer: null, year: 2025, sumRub: 8_000_000, why: "Тот же вид работ" }],
+        gaps: ["Автовышка: нет техники."],
+        risks: ["Короткий срок"],
+        basisNote: "Учтено — контрактов из документов: 1.",
+        llmUsed: true,
+        hasCompanyData: true,
+      },
+    });
+    expect(looksLikeDocx(bytes)).toBe(true);
+  });
+});

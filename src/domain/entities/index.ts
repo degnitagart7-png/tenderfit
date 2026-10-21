@@ -17,6 +17,7 @@ import type {
 } from "@/domain/enums";
 import type { DocumentTerms } from "@/domain/documentTerms";
 import type { CompanyCostProfile } from "@/domain/estimate/companyCostProfile";
+import type { CompanyDocumentCategory, CompanyFacts } from "@/domain/companyFacts/types";
 
 /** Реэкспорт перечислений для удобства: доменные типы импортируются из одного места. */
 export type {
@@ -194,8 +195,8 @@ export interface CompanyDocument {
   text: string;
   /** Количество страниц (для PDF). */
   pageCount?: number;
-  /** Категория документа. */
-  category: "license" | "sro" | "experience" | "financial" | "other";
+  /** Категория документа: license, sro, experience, financial, other и — для «документов для анализа» — price, staff, equipment. */
+  category: CompanyDocumentCategory;
 }
 
 export interface CompanyProfile {
@@ -228,6 +229,12 @@ export interface CompanyProfile {
    * и прямо в блоке «Экономика участия».
    */
   costProfile?: CompanyCostProfile;
+  /**
+   * Деловые факты, извлеченные из документов компании (виды работ, контракты, СРО, лицензии, кадры, техника, свои цены) —
+   * без ФИО, телефонов и прочих персональных данных (`domain/companyFacts`). Нет — документы для анализа ещё не обрабатывались.
+   * Хранится в анкете и синхронизируется вместе с ней; сверку с закупкой делает сервер по сохранённой анкете.
+   */
+  companyFacts?: CompanyFacts;
 }
 
 /* ============================== Профиль поиска ============================== */

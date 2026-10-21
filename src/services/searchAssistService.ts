@@ -10,6 +10,7 @@ import {
 import { createTtlCache } from "@/lib/ttlCache";
 import { parseImpliedWorksResponse } from "@/domain/estimate/impliedWorks";
 import { parseNormPickResponse } from "@/domain/estimate/normPick";
+import { parseFactsResponse } from "@/domain/companyFacts/schema";
 import { resolveLlmEndpoint } from "@/services/llmGateway";
 import { cachedLlmChat, isCacheablePurpose, usageTokens, type GatewayChatAnswer } from "@/services/llmResponseCache";
 import { noteLlmGatewayResponse } from "@/services/llmBalanceTrigger";
@@ -129,6 +130,7 @@ function readableForPurpose(purpose: LlmCallContext["purpose"], content: string)
   try {
     if (purpose === "estimate_norm_pick") parseNormPickResponse(content);
     else if (purpose === "estimate_implied") parseImpliedWorksResponse(content);
+    else if (purpose === "company_facts") parseFactsResponse(content);
     return true;
   } catch {
     return false;

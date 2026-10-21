@@ -3,26 +3,22 @@
 import { useRef, useState } from "react";
 import { Upload, FileText, X } from "lucide-react";
 import type { CompanyDocument } from "@/domain/entities";
+import { COMPANY_DOCUMENT_CATEGORY_LABELS } from "@/domain/companyFacts/types";
+import { guessDocumentCategory } from "@/domain/companyFacts/guessCategory";
 import { Button } from "@/components/ui/primitives";
 import { formatFileSize } from "@/services/documentParser";
 import { isUnreadableText } from "@/services/documentParser";
 import { parseDocumentSmart } from "@/services/serverDocumentParse";
 
-const categoryLabels: Record<CompanyDocument["category"], string> = {
-  license: "Лицензия",
-  sro: "СРО",
-  experience: "Опыт",
-  financial: "Финансовый документ",
-  other: "Другое",
-};
+/** Подписи берутся из домена фактов: там же решается, как категория влияет на разбор (прайс — отдельным запросом и т. д.). */
+const categoryLabels = COMPANY_DOCUMENT_CATEGORY_LABELS;
 
-const categoryOptions: { value: CompanyDocument["category"]; label: string }[] = [
-  { value: "license", label: "Лицензия" },
-  { value: "sro", label: "СРО" },
-  { value: "experience", label: "Опыт" },
-  { value: "financial", label: "Финансовый документ" },
-  { value: "other", label: "Другое" },
-];
+const CATEGORY_ORDER: readonly CompanyDocument["category"][] = ["price", "experience", "sro", "license", "staff", "equipment", "financial", "other"];
+
+const categoryOptions: { value: CompanyDocument["category"]; label: string }[] = CATEGORY_ORDER.map((value) => ({
+  value,
+  label: categoryLabels[value],
+}));
 
 interface DocumentUploaderProps {
   documents: CompanyDocument[];
@@ -34,7 +30,8 @@ export function DocumentUploader({ documents, onChange }: DocumentUploaderProps)
   const fileRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [selectedCategory, setSelectedCategory] = useState<CompanyDocument["category"]>("other");
+  /** «auto» — категория определяется по названию файла (прайс, реестр, СРО…); остальное — выбор человека для всех добавляемых файлов. */
+  const [selectedCategory, setSelectedCategory] = useState<"auto" | CompanyDocument["category"]>("auto");
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -47,8 +44,8 @@ export function DocumentUploader({ documents, onChange }: DocumentUploaderProps)
 
     for (const file of Array.from(files)) {
       const ext = file.name.toLowerCase().split(".").pop() ?? "";
-      if (!["pdf", "docx", "doc", "csv", "odt", "ods", "rtf"].includes(ext)) {
-        setError(`Файл "${file.name}" имеет неподдерживаемый формат. Допустимы: PDF, Word, OpenOffice (odt, ods), RTF, CSV`);
+      if (!["pdf", "docx", "doc", "csv", "xlsx", "xls", "odt", "ods", "rtf"].includes(ext)) {
+        setError(`Файл "${file.name}" имеет неподдерживаемый формат. Допустимы: PDF, Word, Excel, OpenOffice (odt, ods), RTF, CSV`);
         continue;
       }
 
@@ -68,7 +65,7 @@ export function DocumentUploader({ documents, onChange }: DocumentUploaderProps)
           uploadedAt: new Date().toISOString(),
           text: parsed.text,
           pageCount: parsed.pageCount,
-          category: selectedCategory,
+          category: selectedCategory === "auto" ? guessDocumentCategory(file.name) : selectedCategory,
         };
         newDocs.push(doc);
       } catch (err) {
@@ -100,7 +97,7 @@ export function DocumentUploader({ documents, onChange }: DocumentUploaderProps)
         <input
           ref={fileRef}
           type="file"
-          accept=".pdf,.docx,.doc,.csv,.odt,.ods,.rtf"
+          accept=".pdf,.docx,.doc,.csv,.xlsx,.xls,.odt,.ods,.rtf"
           multiple
           className="hidden"
           onChange={handleUpload}
@@ -116,9 +113,10 @@ export function DocumentUploader({ documents, onChange }: DocumentUploaderProps)
         </Button>
         <select
           value={selectedCategory}
-          onChange={(e) => setSelectedCategory(e.target.value as CompanyDocument["category"])}
+          onChange={(e) => setSelectedCategory(e.target.value as "auto" | CompanyDocument["category"])}
           className="rounded-md border border-border bg-panel px-2 py-1.5 text-[13.5px] text-foreground focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
         >
+          <option value="auto">Определить по названию</option>
           {categoryOptions.map((opt) => (
             <option key={opt.value} value={opt.value}>
               {opt.label}
@@ -126,7 +124,7 @@ export function DocumentUploader({ documents, onChange }: DocumentUploaderProps)
           ))}
         </select>
         <span className="text-[12.5px] text-muted-foreground">
-          PDF, Word, CSV
+          PDF, Word, Excel, CSV
         </span>
       </div>
 
@@ -136,7 +134,7 @@ export function DocumentUploader({ documents, onChange }: DocumentUploaderProps)
 
       {documents.length === 0 ? (
         <p className="text-[13.5px] text-muted-foreground">
-          Документы не загружены. Добавьте лицензии, свидетельства СРО, контракты или другие документы.
+          Документы не загружены. Добавьте прайс-лист, реестр контрактов, свидетельства СРО, лицензии или другие документы.
         </p>
       ) : (
         <ul className="space-y-2">

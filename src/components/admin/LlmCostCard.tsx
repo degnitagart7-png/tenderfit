@@ -18,6 +18,8 @@ const PURPOSE_NAMES: Record<string, string> = {
   estimate_implied: "Смета (работы по технологии)",
   search_assist: "Помощник поиска",
   rerank: "Оценка по смыслу",
+  company_facts: "Факты компании (из документов)",
+  company_fit: "Соответствие компании закупке",
   other: "Прочее",
 };
 

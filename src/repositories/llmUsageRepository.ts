@@ -10,6 +10,10 @@ export type LlmPurpose =
   | "estimate_implied"
   | "search_assist"
   | "rerank"
+  /** Извлечение деловых фактов компании из её документов, уже очищенных от ПД (`POST /api/company/facts`). */
+  | "company_facts"
+  /** Соответствие компании требованиям закупки: одна малая сверка на человека и закупку (`POST /api/company/fit`). */
+  | "company_fit"
   | "other";
 
 export const LLM_PURPOSES: readonly LlmPurpose[] = [
@@ -19,6 +23,8 @@ export const LLM_PURPOSES: readonly LlmPurpose[] = [
   "estimate_implied",
   "search_assist",
   "rerank",
+  "company_facts",
+  "company_fit",
   "other",
 ];
 

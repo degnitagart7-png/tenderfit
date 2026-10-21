@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { CompanyProfile } from "@/domain/entities";
+import type { CompanyFacts } from "@/domain/companyFacts/types";
 import {
   companyProfileRepository,
   normalizeSavedProfile,
@@ -445,5 +446,48 @@ describe("профиль затрат компании", () => {
     companyProfileRepository.saveCostProfile({ ...DEFAULT_COST_PROFILE, labourFactorPercent: 90 });
     const raw = JSON.parse(localStorage.getItem(STORAGE_KEYS.profile) ?? "{}") as { costProfile?: { labourFactorPercent: number } };
     expect(raw.costProfile?.labourFactorPercent).toBe(90);
+  });
+});
+
+describe("факты из документов в анкете", () => {
+  const facts: CompanyFacts = {
+    version: 1,
+    extractedAt: "2026-10-21T00:00:00.000Z",
+    sourceDocuments: ["Реестр.pdf"],
+    scrubStats: { fio: 1, phone: 0, email: 0, passport: 0, snils: 0, personalInn: 0, birthDate: 0, address: 0 },
+    workTypes: [],
+    contracts: [{ id: "c1", subject: "Ремонт кровли", workType: null, customerType: "municipal", customer: null, year: 2025, sumRub: 5_000_000, law: "44-FZ", region: null }],
+    sro: [],
+    licenses: [],
+    equipment: [],
+    staff: [],
+    prices: [{ id: "p1", name: "Демонтаж", unit: "м2", priceRub: 340, code: null, kind: "work", vat: "unknown" }],
+    regions: [],
+    notes: [],
+  };
+
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("сохранённые факты и новые категории документов переживают чтение анкеты", () => {
+    const saved = {
+      ...emptyCompanyProfile,
+      companyFacts: facts,
+      documents: [{ id: "d1", fileName: "Прайс.xlsx", fileType: "csv", size: 10, uploadedAt: "2026-10-21", text: "Демонтаж | м2 | 340", category: "price" }],
+    };
+    const profile = normalizeSavedProfile(saved);
+    expect(profile.companyFacts?.contracts[0]?.sumRub).toBe(5_000_000);
+    expect(profile.companyFacts?.prices[0]).toMatchObject({ name: "Демонтаж", unit: "м2", priceRub: 340 });
+    expect(profile.documents[0]?.category).toBe("price");
+  });
+
+  it("анкета без фактов читается как раньше: поля companyFacts нет", () => {
+    expect(normalizeSavedProfile({ ...emptyCompanyProfile }).companyFacts).toBeUndefined();
+  });
+
+  it("факты проходят через сохранение и чтение репозитория", () => {
+    companyProfileRepository.save({ ...emptyCompanyProfile, companyFacts: facts });
+    expect(companyProfileRepository.get().companyFacts?.sourceDocuments).toEqual(["Реестр.pdf"]);
   });
 });

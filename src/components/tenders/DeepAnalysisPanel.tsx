@@ -69,6 +69,9 @@ import {
 import { formatDateTime, formatFileSize, pluralRu } from "@/utils/format";
 import { ConsolidationBlock, FindingProvenance, MoneyBlock } from "@/components/tenders/AnalysisSummaryBlocks";
 import { AnalysisScorecard } from "@/components/tenders/AnalysisScorecard";
+import { CompanyFitBlock } from "@/components/tenders/CompanyFitBlock";
+import { factsHaveContent } from "@/domain/companyFacts/types";
+import { useCompanyFit } from "@/hooks/useCompanyFit";
 import {
   analysisScorecard,
   clarificationDeadline,
@@ -272,6 +275,14 @@ export function DeepAnalysisPanel({
       })
     : null;
   const isActive = summary !== null && ACTIVE_STATES.includes(summary.state);
+
+  /*
+    «Соответствие вашей компании»: когда разбор готов и у человека есть факты из документов, сервер сверяет требования закупки
+    с компанией сам (кэш по отпечаткам — повторное открытие ничего не стоит). Кнопка в блоке запускает то же вручную.
+    Общий разбор закупки один на всех, а эта сверка — личная, поэтому считается отдельно и на сервере.
+  */
+  const hasCompanyFacts = factsHaveContent(profile?.companyFacts);
+  const companyFit = useCompanyFit(tenderId, { auto: summary?.state === "completed" && hasCompanyFacts });
 
   const riskCounts = deepRiskCounts(summary);
   const riskTotal = riskCounts?.total ?? null;
@@ -524,6 +535,7 @@ export function DeepAnalysisPanel({
         tender: tender ?? null,
         moneyOutlook,
         profileMatch,
+        companyFit: companyFit.result,
         bidEconomics,
         vatStatus,
         customerComparison:
@@ -665,6 +677,10 @@ export function DeepAnalysisPanel({
           {/* 2. Светофор по направлениям — до того, как человек уйдёт в детали. */}
           {summary.state === "completed" && scorecard.length > 0 && (
             <AnalysisScorecard items={scorecard} onSelect={goTo} />
+          )}
+          {/* 2б. Соответствие именно вашей компании: общий разбор у всех один, а этот блок — личный. */}
+          {summary.state === "completed" && (
+            <CompanyFitBlock state={companyFit} hasFacts={hasCompanyFacts} onCheck={(force) => void companyFit.run(force)} />
           )}
 
           {error && <p className="text-xs text-brick-fg">{error}</p>}

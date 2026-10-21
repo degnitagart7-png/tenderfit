@@ -6,6 +6,8 @@ import { UNKNOWN_REGION, isPriceKnown } from "@/domain/entities";
 import type { DeepAnalysisSummary } from "@/domain/deepAnalysis";
 import { documentArchive, documentSkipMark } from "@/domain/deepAnalysis";
 import type { ProfileCheckStatus, ProfileMatch } from "@/domain/profileMatch";
+import type { CompanyFitResult, FitVerdict } from "@/domain/companyFacts/fit";
+import { essenceOf, groupedRequirements, riskLines, shortTitle, summaryShort, verdictLine } from "@/domain/companyFacts/fitView";
 import { SAFETY_MARGIN_CAP, type BidEconomics, type PriceVerdict } from "@/domain/estimate/bidEconomics";
 import type { VatStatus } from "@/domain/estimate/vatStatus";
 import type { AppliedNormative, VolumeFinding, VolumeSource } from "@/domain/estimate/types";
@@ -139,6 +141,11 @@ export interface DeepAnalysisReportInput {
   moneyOutlook?: MoneyOutlook | null;
   /** Сверка с профилем; нет — раздел показывает требования без статусов. */
   profileMatch?: ProfileMatch | null;
+  /**
+   * «Соответствие вашей компании»: сверка требований закупки с фактами из документов компании (`companyFacts/fit.ts`).
+   * Нет или без данных о компании — раздела в отчёте нет.
+   */
+  companyFit?: CompanyFitResult | null;
   /**
    * Цена участия по индексной смете. Нет — сметы ещё не считали, и отчёт говорит
    * об этом прямо, а не молчит: без неё вывод об экономике не обоснован.
@@ -573,6 +580,74 @@ function requirementsSection(prepared: Prepared): ReportSection {
     ]),
   });
   return { title, blocks };
+}
+
+/* ============================ 2б. Соответствие вашей компании ============================ */
+
+const FIT_COLUMNS = { number: 5, subject: 32, verdict: 16, basis: 47 } as const;
+
+const FIT_VERDICT_TEXT: Record<FitVerdict, string> = { ok: "Подходит", fail: "Не подходит", check: "Нужно уточнить" };
+const FIT_VERDICT_TONE: Record<FitVerdict, ReportTone> = { ok: "good", fail: "bad", check: "warn" };
+
+/**
+ * Раздел для пользователя, который выгружает отчёт: его компания против требований закупки. Общий разбор закупки у всех один,
+ * а этот раздел — свой у каждого (по фактам из документов компании и анкете). Нет данных о компании — раздела нет.
+ *
+ * Подача та же, что на экране (`fitView`): итог одной строкой, одно предложение сути, таблица «не подходит» и «нужно уточнить»
+ * по строке на пункт (до восьми, в таком порядке), «подходит» — одной компактной строкой, не больше трёх рисков.
+ */
+function companyFitSection(fit: CompanyFitResult | null | undefined): ReportSection | null {
+  if (!fit || !fit.hasCompanyData) return null;
+  const line = verdictLine(fit);
+  const tone: ReportTone = line.tone;
+  const { fails, checks, oks } = groupedRequirements(fit);
+  const summary = summaryShort(fit);
+  const blocks: ReportBlock[] = [{ kind: "paragraph", text: line.text, tone, bold: true }];
+  if (summary.short !== "") blocks.push({ kind: "paragraph", text: summary.short });
+
+  const open = [...fails, ...checks].slice(0, 8);
+  if (open.length > 0) {
+    const { number, subject, verdict, basis } = FIT_COLUMNS;
+    blocks.push({
+      kind: "table",
+      columns: [
+        { title: "№", width: number },
+        { title: "Требование", width: subject },
+        { title: "Вердикт", width: verdict },
+        { title: "Основание", width: basis },
+      ],
+      rows: open.map((item, index) => [
+        { text: String(index + 1) },
+        { text: shortTitle(item.title, 80), bold: item.verdict === "fail" },
+        { text: FIT_VERDICT_TEXT[item.verdict], tone: FIT_VERDICT_TONE[item.verdict], bold: true },
+        { text: essenceOf(item.basis, 140) },
+      ]),
+    });
+  }
+  if (oks.length > 0) {
+    blocks.push({ kind: "paragraph", text: `Подходит (${String(oks.length)}): ${oks.map((item) => shortTitle(item.title, 50)).join("; ")}.`, small: true });
+  }
+  if (fit.experience.length > 0) {
+    blocks.push({
+      kind: "paragraph",
+      small: true,
+      text: `Опыт по теме закупки: ${fit.experience
+        .slice(0, 3)
+        .map((item) => {
+          const facts = [item.year === null ? null : String(item.year), item.sumRub === null ? null : `${formatNumber(item.sumRub)} ₽`].filter((part): part is string => part !== null);
+          return `${shortTitle(item.subject, 60)}${facts.length > 0 ? ` (${facts.join(", ")})` : ""}`;
+        })
+        .join("; ")}.`,
+    });
+  }
+  const risks = riskLines(fit);
+  if (risks.length > 0) blocks.push({ kind: "bullets", items: risks });
+  blocks.push({
+    kind: "paragraph",
+    small: true,
+    text: `${fit.basisNote} ${fit.llmUsed ? "Сверка сделана правилами и ИИ по деловым сведениям из документов компании (персональные данные до ИИ не доходят)." : "Сверка сделана правилами, без ИИ."}`.trim(),
+  });
+  return { title: "Соответствие вашей компании", blocks };
 }
 
 /* ============================ 3. Деньги, 4. Сроки ============================ */
@@ -1553,6 +1628,7 @@ export function buildDeepAnalysisReport(
     conclusion(input, prepared),
     consolidationSection(input.summary),
     requirementsSection(prepared),
+    companyFitSection(input.companyFit),
     moneySection(prepared, input.moneyOutlook ?? null),
     termsSection(prepared),
     // После допуска, денег и сроков: сначала «можно ли и чем рискуем», затем «выгодно ли и до какой цены».
