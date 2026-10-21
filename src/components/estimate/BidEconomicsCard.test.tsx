@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { BidEconomicsCard } from "@/components/estimate/BidEconomicsCard";
@@ -38,29 +38,42 @@ const base = {
 /** Деньги печатаются с узким неразрывным пробелом: сравниваем без пробелов. */
 const digits = (text: string | null | undefined): string => (text ?? "").replace(/\s/g, "");
 
-function figure(label: string): string {
-  const term = screen.getByText(label);
-  return digits(term.nextElementSibling?.textContent);
+/** Значение плитки-ответа в рублях: компактный текст плитки («4,94 млн ₽») округляет, поэтому точное число лежит в data-value. */
+function tile(id: "tile-break-even" | "tile-min-price" | "tile-reduction"): number {
+  return Number(screen.getByTestId(id).getAttribute("data-value"));
 }
 
 describe("BidEconomicsCard", () => {
-  it("показывает минимальную цену и допустимое снижение", () => {
+  it("три плитки-ответа: безубыточно от, с маржой от, снижать можно до — крупно и компактно", () => {
     render(<BidEconomicsCard {...base} />);
 
-    expect(figure("Минимальная цена")).toMatch(/^49371\d\d₽$/);
-    expect(figure("Допустимое снижение")).toBe("8,6%");
+    expect(tile("tile-min-price")).toBeGreaterThanOrEqual(4_937_142);
+    expect(tile("tile-min-price")).toBeLessThanOrEqual(4_937_144);
+    expect(tile("tile-break-even")).toBe(4_320_000);
+    expect(digits(screen.getByTestId("tile-break-even").textContent)).toBe("Безубыточноот4,32млн₽");
+    expect(digits(screen.getByTestId("tile-min-price").textContent)).toBe("Смаржой10%—от4,94млн₽");
+    expect(digits(screen.getByTestId("tile-reduction").textContent)).toBe("Снижатьможнодо8,6%отНМЦК");
     expect(screen.getByText("НМЦК выше расчёта")).toBeTruthy();
   });
 
-  it("шкала цены: три зоны и подписи с суммами, а не россыпь цифр", () => {
+  it("нельзя снижать — плитка красная и говорит «нельзя»", () => {
+    render(<BidEconomicsCard {...base} nmc={4_500_000} />);
+    const reduction = screen.getByTestId("tile-reduction");
+    expect(digits(reduction.textContent)).toBe("Снижатьможнодонельзя");
+    expect(reduction.querySelector(".text-brick-fg")).not.toBeNull();
+  });
+
+  it("шкала цены: три зоны с короткими подписями, суммы не повторяются; плиток-дублей пяти цифр нет", () => {
     render(<BidEconomicsCard {...base} />);
 
     const scale = screen.getByTestId("price-scale");
     expect(scale.textContent).toContain("Убыток");
     expect(scale.textContent).toContain("Ниже вашей маржи");
     expect(scale.textContent).toContain("Выгодно");
-    // Граница «выгодно» — та же минимальная цена, что в цифре выше.
-    expect(digits(scale.textContent)).toContain(figure("Минимальная цена").replace("₽", ""));
+    // Суммы видны один раз — в плитках; шкала их не печатает (они только в aria-label).
+    expect(scale.textContent).not.toMatch(/\d/);
+    expect(scale.querySelector("[role=img]")!.getAttribute("aria-label")).toContain("убыток до");
+    expect(screen.queryByText("Допустимое снижение")).toBeNull();
   });
 
   it("без НМЦК шкалы нет: нечего откладывать от нуля", () => {
@@ -71,12 +84,12 @@ describe("BidEconomicsCard", () => {
 
   it("НМЦК без НДС — границы пересчитываются сразу", () => {
     render(<BidEconomicsCard {...base} />);
-    const before = figure("Минимальная цена");
+    const before = tile("tile-min-price");
 
     fireEvent.click(screen.getByLabelText("НМЦК с НДС"));
 
-    expect(figure("Минимальная цена")).not.toBe(before);
-    expect(figure("Минимальная цена")).toMatch(/^41142\d\d₽$/);
+    expect(tile("tile-min-price")).not.toBe(before);
+    expect(tile("tile-min-price")).toBeCloseTo(4_114_286, -1);
   });
 
   it("НМЦК ниже себестоимости — красная пометка", () => {
@@ -86,12 +99,13 @@ describe("BidEconomicsCard", () => {
     expect(screen.getByText(/убыточна ещё до снижения/)).toBeTruthy();
   });
 
-  it("цена не объявлена — без таблицы, но с границами", () => {
+  it("цена не объявлена — без таблицы, но с границами; плитка снижения просит НМЦК", () => {
     render(<BidEconomicsCard {...base} nmc={null} />);
 
     expect(screen.getByText("Цена не объявлена")).toBeTruthy();
     expect(screen.queryByText("Что останется компании при разной цене")).toBeNull();
-    expect(figure("Безубыточная цена")).toMatch(/^43200\d\d₽$/);
+    expect(tile("tile-break-even")).toBe(4_320_000);
+    expect(digits(screen.getByTestId("tile-reduction").textContent)).toBe("СнижатьможнодоукажитеНМЦК");
   });
 
   it("показатель называется «Надёжность расчёта», а не «Доверие»", () => {
@@ -101,22 +115,52 @@ describe("BidEconomicsCard", () => {
     expect(screen.queryByText(/Доверие/)).toBeNull();
   });
 
-  it("запас прочности при НМЦК — рядом с главными цифрами, с пояснением", () => {
+  it("запас прочности при НМЦК — одной небольшой строкой под плитками", () => {
     render(<BidEconomicsCard {...base} />);
 
     // (4 500 000 − 3 600 000) / 3 600 000 = 25 %
-    expect(figure("Запас прочности при НМЦК")).toBe("+25,0%");
-    expect(screen.getByText("на столько могут вырасти затраты до нулевой прибыли")).toBeTruthy();
+    const line = screen.getByTestId("bid-safety").textContent ?? "";
+    expect(digits(line)).toContain("ЗапаспрочностиприНМЦК+25,0%");
+    expect(line).toContain("на столько могут вырасти затраты до нулевой прибыли");
   });
 
-  it("в таблице цен есть колонка «Запас»: у цены 90 % — +12,5 %, у убыточной строки — 0", () => {
+  it("таблица цен: цена, прибыль, маржа, итог; выручка, затраты, налог и запас — по кнопке «Подробнее»", () => {
     render(<BidEconomicsCard {...base} />);
+    const table = screen.getByTestId("price-table");
+    const headers = () => within(table).getAllByRole("columnheader").map((th) => th.textContent);
 
-    expect(screen.getByText("Запас")).toBeTruthy();
-    const row90 = screen.getByText(/^90 % · /).closest("tr")!;
-    expect(digits(row90.textContent)).toContain("+12,5%");
-    const row70 = screen.getByText(/^70 % · /).closest("tr")!;
-    expect(digits(row70.textContent)).toContain("0,0%убыток");
+    expect(headers()).toEqual(["Цена", "Прибыль", "Маржа", "Итог"]);
+    expect(within(table).getByText(/^70 % · /).closest("tr")!.textContent).toContain("убыток");
+    expect(within(table).getByText(/^95 % · /).closest("tr")!.textContent).toContain("выгодно");
+    expect(within(table).getByText(/^90 % · /).closest("tr")!.textContent).toContain("ниже маржи");
+
+    fireEvent.click(screen.getByRole("button", { name: /Подробнее: выручка, затраты, налог/ }));
+
+    expect(headers()).toEqual(["Цена", "Выручка", "Затраты", "Налог", "Прибыль", "Маржа", "Запас", "Итог"]);
+    // У цены 90 % запас +12,5 %, у убыточной строки — 0.
+    expect(digits(within(table).getByText(/^90 % · /).closest("tr")!.textContent)).toContain("+12,5%");
+    expect(digits(within(table).getByText(/^70 % · /).closest("tr")!.textContent)).toContain("0,0%");
+  });
+
+  it("строка ближе всего к «Моей цене» подсвечена", () => {
+    render(<BidEconomicsCard {...base} />);
+    expect(screen.getByTestId("price-table").querySelector("[data-closest]")).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("Снижение от НМЦК, %"), { target: { value: "11" } });
+
+    const row = screen.getByTestId("price-table").querySelector("[data-closest]")!;
+    expect(row.textContent).toMatch(/^90 % · /);
+    expect(row.getAttribute("aria-current")).toBe("true");
+  });
+
+  it("не больше одной пометки на виду; остальные и основа — в «На чём стоят эти числа»", () => {
+    render(<BidEconomicsCard {...base} nmc={3_600_000} />);
+    expect(screen.getAllByTestId("bid-warning")).toHaveLength(1);
+    expect(screen.getByTestId("bid-warning").textContent).toMatch(/убыточна ещё до снижения/);
+    const hidden = screen.getByTestId("bid-flags");
+    expect(hidden.closest("details")).not.toBeNull();
+    expect(hidden.textContent).toContain("НМЦК принята с НДС");
+    expect(screen.getByTestId("bid-base-note").closest("details")).not.toBeNull();
   });
 
   it("44-ФЗ: строки со снижением от 25 % помечены «антидемпинг» с пояснением", () => {
@@ -162,7 +206,7 @@ describe("BidEconomicsCard: НДС из документации", () => {
 
     expect(checkbox().checked).toBe(false);
     expect(screen.getByTestId("vat-basis").textContent).toBe("из документации: «цена контракта без НДС» (Извещение.docx)");
-    expect(figure("Минимальная цена")).toMatch(/^41142\d\d₽$/);
+    expect(tile("tile-min-price")).toBeCloseTo(4_114_286, -1);
   });
 
   it("44-ФЗ: основание — закон, с оговоркой", () => {
@@ -189,12 +233,12 @@ describe("BidEconomicsCard: НДС из документации", () => {
 
   it("человек всё ещё может переключить: границы пересчитываются, подпись говорит об изменении", () => {
     render(<BidEconomicsCard {...base} vat={vat({ basis: "DOCUMENT", quote: "цена с учетом НДС", documentName: "Извещение.docx" })} />);
-    const before = figure("Минимальная цена");
+    const before = tile("tile-min-price");
 
     fireEvent.click(checkbox());
 
     expect(checkbox().checked).toBe(false);
-    expect(figure("Минимальная цена")).not.toBe(before);
+    expect(tile("tile-min-price")).not.toBe(before);
     expect(screen.getByTestId("vat-basis").textContent).toMatch(/значение изменено вами/);
   });
 

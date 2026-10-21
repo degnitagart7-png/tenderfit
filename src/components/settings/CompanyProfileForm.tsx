@@ -21,6 +21,8 @@ import {
   taxSystemLabels,
 } from "@/components/onboarding/OnboardingWizard";
 import { DocumentUploader } from "@/components/settings/DocumentUploader";
+import { CostProfileEditor } from "@/components/estimate/CostProfileEditor";
+import { DEFAULT_COST_PROFILE } from "@/domain/estimate/companyCostProfile";
 import { cn } from "@/lib/cn";
 import { ProfileAuditNotice } from "@/components/settings/ProfileAuditNotice";
 
@@ -349,6 +351,19 @@ export function CompanyProfileForm({ initial }: { initial: CompanyProfile }) {
             </Field>
           </div>
         </div>
+      </Card>
+
+      <Card title="Ваши затраты — для расчёта цены участия">
+        <p className="muted mb-3">
+          Смета считает затраты «как по нормам». Здесь укажите, чем ваши отличаются: скидки поставщиков, свой труд и техника, доля
+          накладных, субподряд. «Безубыточная цена» и «допустимое снижение» в разделе «Смета» пересчитаются под вас. Ничего не
+          заполнено — расчёт идёт как по смете. Налоговая система и минимальная маржинальность — выше, в блоках «Сведения» и «За что не беретесь».
+        </p>
+        <CostProfileEditor
+          value={profile.costProfile ?? DEFAULT_COST_PROFILE}
+          onChange={(next) => patch({ costProfile: next })}
+          idPrefix="profile-cost"
+        />
       </Card>
 
       <Card title="Что предпочитаете — поднимает в списке, но не отсеивает">

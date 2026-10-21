@@ -11,6 +11,9 @@ import { EstimateResult } from "@/components/estimate/EstimateResult";
 import { useEstimateAuditJob, useEstimateJob } from "@/hooks/useEstimateJob";
 import { marksOf, useBillEdits } from "@/hooks/useBillEdits";
 import { CustomerAuditCard } from "@/components/estimate/CustomerAuditCard";
+import { AuditBidEconomics } from "@/components/estimate/AuditBidEconomics";
+import { persistCostProfile } from "@/hooks/useCompanyCostProfile";
+import { effectiveMinMargin } from "@/domain/estimate/companyCostProfile";
 import { SsrAuditCard } from "@/components/estimate/SsrAuditCard";
 import { computeSsrLayer } from "@/domain/estimate/ssrLayer";
 import { usePriceZones } from "@/hooks/usePriceZones";
@@ -502,8 +505,9 @@ export function DeepAnalysisPanel({
           unpricedResources: assurance.unpricedResources,
           company: {
             taxSystem: profile?.taxSystem ?? "OSNO",
-            minMarginPercent: profile?.restrictions.minMarginPercent ?? 0,
+            minMarginPercent: effectiveMinMargin(profile?.restrictions.minMarginPercent ?? 0),
           },
+          costProfile: profile?.costProfile ?? null,
           nmcIncludesVat: vatStatus.includesVat,
           ssr: ssrLayer.ssr,
           law: tender?.law,
@@ -834,7 +838,23 @@ export function DeepAnalysisPanel({
                   <div className="divide-y divide-border border-y border-border">
                     {auditJob.result !== null && (
                       <Fold title="Проверка сметы заказчика" summary="Цены, нормативы и арифметика — сверка с нашими" defaultOpen>
-                        <CustomerAuditCard audit={auditJob.result} />
+                        <CustomerAuditCard audit={auditJob.result} jobId={auditJob.jobId} />
+                      </Fold>
+                    )}
+                    {auditJob.result !== null && (
+                      <Fold title="Экономика участия по смете заказчика" summary="Безубыточная цена и допустимое снижение по его смете, пересчитанной по нашим ценам">
+                        <AuditBidEconomics
+                          audit={auditJob.result}
+                          company={
+                            profile === null || profile === undefined
+                              ? null
+                              : { taxSystem: profile.taxSystem, minMarginPercent: profile.restrictions.minMarginPercent }
+                          }
+                          costProfile={profile?.costProfile}
+                          onCostProfileChange={persistCostProfile}
+                          tender={{ nmc: nmcValue, law: tender?.law, vat: vatStatus }}
+                          subject={subject}
+                        />
                       </Fold>
                     )}
                     {ssrLayer.audits.length > 0 && (
@@ -863,6 +883,8 @@ export function DeepAnalysisPanel({
                       minMarginPercent: profile?.restrictions.minMarginPercent ?? 0,
                       law: tender?.law,
                       vat: vatStatus,
+                      costProfile: profile?.costProfile,
+                      onCostProfileChange: persistCostProfile,
                     }}
                   />
                 )}

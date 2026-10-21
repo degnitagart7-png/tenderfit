@@ -6,6 +6,7 @@ import type { VatStatus } from "@/domain/estimate/vatStatus";
 import type { CustomerComparison } from "@/domain/estimate/customerComparison";
 import {
   buildDeepAnalysisReport,
+  type DeepAnalysisReport,
   type DeepAnalysisReportInput,
   type ReportBlock,
   type ReportCell,
@@ -99,6 +100,30 @@ const CONTENT_WIDTH = 9638;
 export async function buildDeepAnalysisDocx(
   input: DeepAnalysisExportInput,
 ): Promise<Uint8Array> {
+  const report = buildDeepAnalysisReport(input);
+  return renderReportDocx(report, {
+    headerLine: `Закупка № ${report.regNumber}`,
+    footerLabel: `ТендерФит · закупка № ${report.regNumber}`,
+    docTitle: `${report.title} — закупка № ${report.regNumber}`,
+  });
+}
+
+/** Что в документе зависит от вида отчёта: строка под заголовком, подпись колонтитула и название в свойствах файла. */
+export interface ReportDocxOptions {
+  readonly headerLine: string;
+  readonly footerLabel: string;
+  readonly docTitle: string;
+}
+
+/**
+ * Вёрстка структуры отчёта (`DeepAnalysisReport`) в .docx: карточка таблицей, нумерованные разделы, таблицы с шапкой, статусы
+ * цветом и словом, номер страницы в колонтитуле. Общая для отчёта глубокого анализа и заключения по смете заказчика
+ * (`auditConclusionExport.ts`): оба — «заголовок, карточка, разделы из абзацев, списков и таблиц».
+ */
+export async function renderReportDocx(
+  report: DeepAnalysisReport,
+  options: ReportDocxOptions,
+): Promise<Uint8Array> {
   const {
     AlignmentType,
     BorderStyle,
@@ -119,7 +144,6 @@ export async function buildDeepAnalysisDocx(
     WidthType,
   } = await import("docx");
 
-  const report = buildDeepAnalysisReport(input);
   type Child = InstanceType<typeof Paragraph> | InstanceType<typeof Table>;
   const children: Child[] = [];
 
@@ -244,7 +268,7 @@ export async function buildDeepAnalysisDocx(
     new Paragraph({
       children: [
         new TextRun({
-          text: `Закупка № ${report.regNumber}`,
+          text: options.headerLine,
           bold: true,
           size: 24,
         }),
@@ -314,7 +338,7 @@ export async function buildDeepAnalysisDocx(
                 text: block.text,
                 bold: block.bold,
                 // Мелкий абзац — перечень низких рисков, модель, прочитанные файлы: справочно.
-                size: block.small ? 18 : undefined,
+                size: block.small ? 18 : block.large ? 28 : undefined,
                 color: block.tone
                   ? TONE_COLOR[block.tone]
                   : block.small
@@ -351,7 +375,7 @@ export async function buildDeepAnalysisDocx(
 
   const doc = new Document({
     creator: "ТендерФит",
-    title: `${report.title} — закупка № ${report.regNumber}`,
+    title: options.docTitle,
     styles: {
       default: { document: { run: { font: "Arial", size: 20 } } },
       paragraphStyles: [
@@ -411,7 +435,7 @@ export async function buildDeepAnalysisDocx(
                 children: [
                   new TextRun({
                     children: [
-                      `ТендерФит · закупка № ${report.regNumber} · стр. `,
+                      `${options.footerLabel} · стр. `,
                       PageNumber.CURRENT,
                       " из ",
                       PageNumber.TOTAL_PAGES,

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { readJsonOrThrow } from "@/lib/readJson";
+import { userFacingError } from "@/lib/userError";
 
 import type { EstimateResultData } from "@/components/estimate/EstimateResult";
 import type { AuditReport } from "@/domain/estimate/customerAudit";
@@ -165,7 +166,7 @@ function useQueuedJob<T>(
     }
     if (job.status === "failed") {
       setStatus("failed");
-      setError(job.error ?? "Расчёт не удался");
+      setError(job.error === null ? "Расчёт не удался" : userFacingError(job.error, "Расчёт не удался — повторите через минуту."));
       return true;
     }
     setStatus(job.status === "pending" ? "queued" : "running");
@@ -186,7 +187,7 @@ function useQueuedJob<T>(
     } catch (err) {
       if (!alive.current || generation !== epoch.current) return;
       setStatus("failed");
-      setError(err instanceof Error ? err.message : "Задание не читается");
+      setError(userFacingError(err, "Не удалось получить результат — обновите страницу через минуту."));
     }
   }, [apply]);
 
@@ -245,7 +246,7 @@ function useQueuedJob<T>(
         return payload.job.id;
       } catch (err) {
         setStatus("failed");
-        setError(err instanceof Error ? err.message : "Задание не поставлено");
+        setError(userFacingError(err, "Не удалось поставить задание — повторите через минуту."));
         return null;
       }
     },

@@ -1,5 +1,6 @@
 "use client";
 
+import { isTechnicalError } from "@/lib/userError";
 import Link from "next/link";
 
 import { Badge, Button } from "@/components/ui/primitives";
@@ -74,7 +75,7 @@ function Row({ item, selected, onOpen }: { item: EstimateHistoryItem; selected: 
           )}
         </div>
       </div>
-      {item.status === "failed" && item.error !== null && <p className="mt-1 text-[13px] text-brick-fg">{item.error}</p>}
+      {item.status === "failed" && item.error !== null && <p className="mt-1 text-[13px] text-brick-fg">{isTechnicalError(item.error) ? "Расчёт не удался — повторите через минуту." : item.error}</p>}
       {item.tenderId !== null && (
         <Link
           href={`/tenders/${encodeURIComponent(item.tenderId)}?tab=analysis`}

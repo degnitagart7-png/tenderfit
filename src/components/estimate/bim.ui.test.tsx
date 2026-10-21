@@ -68,11 +68,10 @@ describe("аудит сметы БИМ в карточке", () => {
 
   it("шапка называет метод, ФЕР-2020 и квартал; вывод и «откуда разница» — те же слова, что у ресурсной сметы", () => {
     render(<CustomerAuditCard audit={auditData([report])} />);
-    const headline = flat(screen.getByTestId("audit-headline").textContent);
-    expect(headline).toContain("Смета заказчика (базисно-индексный метод)");
-    expect(headline).toContain("по ФЕР-2020 и индексам Минстроя (Белгородская область, III кв. 2026)");
-    expect(headline).toContain(report.conclusion.replace(/\s/g, " "));
-    expect(screen.getByTestId("audit-zone").textContent).toContain("базисно-индексным методом");
+    const zone = flat(screen.getByTestId("audit-zone").textContent);
+    expect(zone).toContain("базисно-индексному методу");
+    expect(zone).toContain("по ФЕР-2020 и индексам Минстроя (Белгородская область, III кв. 2026)");
+    expect(flat(screen.getByTestId("audit-verdict-headline").textContent)).toContain("Смета заказчика занижена на 13 674 ₽");
     expect(screen.getByTestId("audit-zone").textContent).not.toContain("Республика Бурятия");
     const lines = within(screen.getByTestId("audit-breakdown")).getAllByRole("listitem").map((item) => flat(item.textContent));
     expect(lines.some((line) => line.startsWith("Труд (с НР и СП на него): +"))).toBe(true);

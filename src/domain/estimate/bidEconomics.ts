@@ -3,6 +3,19 @@ import type { TenderLaw } from "@/domain/enums";
 import type { SsrResult } from "@/domain/estimate/ssr";
 import type { EstimateDocument } from "@/domain/estimate/types";
 import type { VatBasis } from "@/domain/estimate/vatStatus";
+import {
+  ANTI_DUMPING_REDUCTION_PERCENT,
+  antiDumpingNote,
+  type AntiDumpingNote,
+} from "@/domain/estimate/antiDumping";
+import {
+  DEFAULT_COST_PROFILE,
+  isDefaultCostProfile,
+  normalizeCostProfile,
+  type CompanyCostProfile,
+} from "@/domain/estimate/companyCostProfile";
+
+export { ANTI_DUMPING_REDUCTION_PERCENT };
 
 /**
  * Цена и экономика участия по индексной смете.
@@ -39,6 +52,19 @@ import type { VatBasis } from "@/domain/estimate/vatStatus";
  * - НДС — по прежней логике (`nmcIncludesVat`, налоговый режим компании): выручка плательщика НДС без НДС.
  * Без `ssr` расчёт идёт как раньше, итоги не меняются.
  *
+ * Профиль затрат компании (`companyCostProfile.ts`). Сметная себестоимость — это затраты «как по нормам»; у компании
+ * есть скидки поставщиков, свой труд и техника, часть работ уходит субподряду. Поправки применяются к группам затрат
+ * сметы (труд, машины, материалы, накладные), и только к ним: позиции по ценам заказчика и услуги группами не
+ * разложены и остаются «прочими». Без профиля (или с нейтральным) себестоимость — ровно сметная, как раньше.
+ *
+ * Основа расчёта — не обязательно наша смета. Аудит сметы заказчика (`mode: "audit"`) даёт пересчёт его сметы по ценам зоны
+ * (`BidCostBase`, `bidAuditBase.ts`): та же экономика считается по нему, а НМЦК — итог сметы заказчика. Если у отчёта аудита нет
+ * разбивки по группам (сметы БИМ, отчёты, посчитанные раньше), вся сумма идёт в «прочие» и принимается за себестоимость целиком
+ * (сметная прибыль не выделена) — оценка осторожная, она занижает допустимое снижение.
+ *
+ * «Моя цена» (`evaluateMyPrice`) — те же деньги для одной цены, названной человеком. Функция берёт готовый `BidEconomics` и
+ * не пересчитывает основу: все допущения уже в нём.
+ *
  * Модуль чистый: ни сети, ни хранилища, ни `Date.now()`.
  */
 
@@ -49,6 +75,10 @@ export interface BidEconomicsAssumptions {
    * выбор, он завышает себестоимость и занижает допустимое снижение.
    */
   readonly overheadRealization: number;
+  /** Профиль затрат компании, который лёг в расчёт (нейтральный, если не задан). */
+  readonly costProfile: CompanyCostProfile;
+  /** Профиль даёт поправки к сметной себестоимости (не нейтральный). */
+  readonly costProfileApplied: boolean;
   /**
    * НМЦК объявлена с НДС. Так бывает у подавляющего большинства закупок, но
    * извещение часто молчит, поэтому по умолчанию это допущение, а не факт.
@@ -58,9 +88,86 @@ export interface BidEconomicsAssumptions {
   readonly vatPercent: number;
 }
 
+/** Статьи себестоимости, ₽. */
+export interface BidCostStructure {
+  readonly labour: number;
+  readonly machines: number;
+  readonly materials: number;
+  /** Работы субподряда по цене субподрядчика. */
+  readonly subcontract: number;
+  readonly other: number;
+  readonly overhead: number;
+  readonly limited: number;
+  readonly nonDeductibleVat: number;
+}
+
+/**
+ * Основа расчёта по группам затрат, ₽ без НДС. Своя у сметы (`costBaseOfDocument`) и у пересчёта сметы заказчика
+ * (`bidAuditBase.ts`): остальной код одинаков.
+ */
+export interface BidCostBase {
+  readonly labour: number;
+  readonly machines: number;
+  readonly materials: number;
+  /** Прямые затраты вне групп: позиции по ценам заказчика, услуги, «свои цены». Поправкам профиля не подлежат. */
+  readonly other: number;
+  readonly overhead: number;
+  readonly profit: number;
+  /** Зимнее удорожание и временные здания. */
+  readonly limited: number;
+  /** Итог без НДС, с которым сравнивается НМЦК. */
+  readonly beforeVat: number;
+  readonly vatPercent: number;
+  /** Откуда основа: смета, пересчёт сметы заказчика с группами, пересчёт без групп (одной суммой). */
+  readonly origin: "ESTIMATE" | "AUDIT" | "AUDIT_LUMP";
+}
+
+function numberOr0(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+/** Основа из сметного документа: группы — суммы по строкам, «прочие» — остаток прямых затрат. */
+export function costBaseOfDocument(document: EstimateDocument): BidCostBase {
+  let labour = 0;
+  let machines = 0;
+  let materials = 0;
+  for (const section of document.sections) {
+    for (const line of section.lines) {
+      labour += numberOr0(line.labourCost);
+      machines += numberOr0(line.machineCost);
+      materials += numberOr0(line.materialCost);
+    }
+  }
+  const { totals } = document;
+  return {
+    labour,
+    machines,
+    materials,
+    other: Math.max(0, totals.directCost - labour - machines - materials),
+    overhead: totals.overheadCost,
+    profit: totals.profitCost,
+    limited: totals.winterSurcharge + totals.temporaryStructures,
+    beforeVat: totals.beforeVat,
+    vatPercent: document.parameters.vatPercent,
+    origin: "ESTIMATE",
+  };
+}
+
 export interface BidEconomicsInput {
-  /** Наш расчёт по нормам и текущим ценам Минстроя. */
-  readonly document: EstimateDocument;
+  /** Наш расчёт по нормам и текущим ценам Минстроя. Нет — основа задана `costBase` (аудит сметы заказчика). */
+  readonly document?: EstimateDocument;
+  /** Основа по группам затрат вместо документа: пересчёт сметы заказчика. */
+  readonly costBase?: BidCostBase;
+  /**
+   * Профиль затрат компании: поправки к группам затрат. Нет — себестоимость сметная. Доля накладных из профиля
+   * действует, если не задан `overheadRealization`.
+   */
+  readonly costProfile?: CompanyCostProfile | null;
+  /**
+   * Доля затрат, которую не удалось переоценить, %: у аудита это то, что остаётся по цене заказчика (нет нашей цены).
+   * Снижает надёжность расчёта и добавляет пометку. Нет — пометки нет.
+   */
+  readonly unverifiedPercent?: number;
   /** НМЦК, ₽, как объявлена. null и ноль — цена не объявлена (частый случай у 223-ФЗ). */
   readonly nmc: number | null;
   /** Позиций в ведомости всего: знаменатель доли непосчитанного. */
@@ -218,8 +325,14 @@ export interface BidEconomics {
     readonly materials: number;
     /** Итог сметы без НДС. */
     readonly estimateBeforeVat: number;
-    /** Себестоимость исполнения: прямые затраты, накладные и лимитированные. */
+    /** Себестоимость исполнения: прямые затраты, накладные и лимитированные — с поправками профиля затрат. */
     readonly cost: number;
+    /** Та же себестоимость без поправок профиля — «как по смете»: для сравнения со своей. */
+    readonly costByEstimate: number;
+    /** Из чего сложена себестоимость `cost`, ₽ (с индексом инфляции, если он применён): части складываются в неё. */
+    readonly costStructure: BidCostStructure;
+    /** То же «как по смете», без поправок профиля: складывается в `costByEstimate`. */
+    readonly costStructureByEstimate: BidCostStructure;
     /** НДС, который не принимается к вычету (плательщик УСН): на материалах. */
     readonly nonDeductibleVat: number;
     /**
@@ -232,6 +345,10 @@ export interface BidEconomics {
   /** ССР в цене участия; null — ССР не передан, сравнение идёт со сметой. */
   readonly ssr: BidSsrBasis | null;
 
+  /** Закон закупки; null — не известен (антидемпинговое правило тогда условное). */
+  readonly law: TenderLaw | null;
+  /** Откуда основа расчёта (смета, пересчёт сметы заказчика). */
+  readonly baseOrigin: BidCostBase["origin"];
   readonly nmc: number | null;
   /** НМЦК без НДС, если известно, что она с НДС. */
   readonly nmcBeforeVat: number | null;
@@ -275,18 +392,58 @@ export const STRESS_PRICE_PERCENT: readonly number[] = [100, 90, 80];
 
 /** Верхняя граница поиска запаса прочности, %: при большем запасе цифра уже не помогает решению. */
 export const SAFETY_MARGIN_CAP = 500;
-/** 44-ФЗ, ст. 37: антидемпинговая мера действует при снижении НМЦК на 25 % и более. */
-export const ANTI_DUMPING_REDUCTION_PERCENT = 25;
 
 /** Допуск «рядом с расчётом»: ±5 %. */
 const NEAR_TOLERANCE = 0.05;
 
-function sumMaterials(document: EstimateDocument): number {
-  let total = 0;
-  for (const section of document.sections) {
-    for (const line of section.lines) total += line.materialCost;
-  }
-  return total;
+/** Себестоимость по группам: поправки профиля применены. Одна функция для расчёта и для сравнения «как по смете». */
+function costOf(
+  base: BidCostBase,
+  profile: CompanyCostProfile,
+  overheadRealization: number,
+  context: { readonly vatPayer: boolean; readonly vatRate: number; readonly inflationIndex: number },
+): BidCostStructure & { readonly total: number } {
+  const own = 1 - profile.subcontractSharePercent / 100;
+  const subPrice = profile.subcontractPricePercent / 100;
+  const normativeDirect = base.labour + base.machines + base.materials;
+  const materials = own * base.materials * (1 - profile.materialDiscountPercent / 100);
+  const parts = {
+    labour: own * base.labour * (profile.labourFactorPercent / 100),
+    machines: own * base.machines * (profile.machinesFactorPercent / 100),
+    materials,
+    subcontract: (1 - own) * normativeDirect * subPrice,
+    other: base.other,
+    overhead: base.overhead * overheadRealization,
+    limited: base.limited,
+    // НДС в ценах материалов остаётся затратой тем, кто его не возмещает (не плательщик НДС).
+    nonDeductibleVat: context.vatPayer ? 0 : materials * context.vatRate,
+  };
+  // Инфляция — сквозная статья (см. шапку): затраты исполняются в том же прогнозном уровне цен, что и цена.
+  const index = context.inflationIndex;
+  const scaled = {
+    labour: parts.labour * index,
+    machines: parts.machines * index,
+    materials: parts.materials * index,
+    subcontract: parts.subcontract * index,
+    other: parts.other * index,
+    overhead: parts.overhead * index,
+    limited: parts.limited * index,
+    nonDeductibleVat: parts.nonDeductibleVat * index,
+  };
+  return { ...scaled, total: Object.values(scaled).reduce((sum, value) => sum + value, 0) };
+}
+
+function roundedStructure(structure: BidCostStructure): BidCostStructure {
+  return {
+    labour: money(structure.labour),
+    machines: money(structure.machines),
+    materials: money(structure.materials),
+    subcontract: money(structure.subcontract),
+    other: money(structure.other),
+    overhead: money(structure.overhead),
+    limited: money(structure.limited),
+    nonDeductibleVat: money(structure.nonDeductibleVat),
+  };
 }
 
 interface CostModel {
@@ -387,16 +544,33 @@ function solveSafetyMargin(model: CostModel, price: number): number {
 }
 
 export function computeBidEconomics(input: BidEconomicsInput): BidEconomics {
-  const { document, company } = input;
-  const totals = document.totals;
-  const vatPercent = document.parameters.vatPercent;
+  const { company } = input;
+  const costBase: BidCostBase | null =
+    input.costBase ?? (input.document === undefined ? null : costBaseOfDocument(input.document));
+  const base: BidCostBase = costBase ?? {
+    labour: 0,
+    machines: 0,
+    materials: 0,
+    other: 0,
+    overhead: 0,
+    profit: 0,
+    limited: 0,
+    beforeVat: 0,
+    vatPercent: 0,
+    origin: "ESTIMATE",
+  };
+  const vatPercent = base.vatPercent;
   const nmcIncludesVat = input.nmcIncludesVat ?? true;
+  const costProfile = normalizeCostProfile(input.costProfile ?? DEFAULT_COST_PROFILE);
+  const costProfileApplied = !isDefaultCostProfile(costProfile);
   const overheadRealization = Math.min(
     1.5,
-    Math.max(0, input.overheadRealization ?? 1),
+    Math.max(0, input.overheadRealization ?? costProfile.overheadRealizationPercent / 100),
   );
   const assumptions: BidEconomicsAssumptions = {
     overheadRealization,
+    costProfile,
+    costProfileApplied,
     nmcIncludesVat,
     vatPercent,
   };
@@ -409,27 +583,31 @@ export function computeBidEconomics(input: BidEconomicsInput): BidEconomics {
   // Инфляция — сквозная статья, как НДС: затраты исполняются в том же прогнозном уровне цен, что и цена.
   const inflationIndex = ssr !== null && ssr.nmc.inflation.applied ? ssr.nmc.inflation.index : 1;
 
-  const limitedCosts = totals.winterSurcharge + totals.temporaryStructures;
-  const materials = sumMaterials(document);
-  const nonDeductibleVat = vatPayer ? 0 : materials * vatRate;
   // Резерв на непредвиденные в себестоимость не входит: это деньги заказчика на риск, а не затраты подрядчика.
-  const cost =
-    (totals.directCost +
-      totals.overheadCost * overheadRealization +
-      limitedCosts +
-      nonDeductibleVat) *
-    inflationIndex;
+  const context = { vatPayer, vatRate, inflationIndex };
+  const structure = costOf(base, costProfile, overheadRealization, context);
+  const cost = structure.total;
+  // «Как по смете»: без поправок профиля, накладные — целиком (доля накладных — тоже поправка профиля, если её не задали явно).
+  const byEstimate = costProfileApplied
+    ? costOf(base, DEFAULT_COST_PROFILE, Math.min(1.5, Math.max(0, input.overheadRealization ?? 1)), context)
+    : structure;
+  const costByEstimate = byEstimate.total;
+  const limitedCosts = base.limited;
+  const nonDeductibleVat = structure.nonDeductibleVat / inflationIndex;
   // С чем сравнивается НМЦК: цена контракта по ССР (резерв, инфляция) или итог сметы.
-  const comparedBeforeVat = ssr === null ? totals.beforeVat : ssr.nmc.beforeVat;
+  const comparedBeforeVat = ssr === null ? base.beforeVat : ssr.nmc.beforeVat;
 
   const basis = {
-    directCost: money(totals.directCost),
-    overhead: money(totals.overheadCost),
-    estimatedProfit: money(totals.profitCost),
+    directCost: money(base.labour + base.machines + base.materials + base.other),
+    overhead: money(base.overhead),
+    estimatedProfit: money(base.profit),
     limitedCosts: money(limitedCosts),
-    materials: money(materials),
-    estimateBeforeVat: money(totals.beforeVat),
+    materials: money(base.materials),
+    estimateBeforeVat: money(base.beforeVat),
     cost: money(cost),
+    costByEstimate: money(costByEstimate),
+    costStructure: roundedStructure(structure),
+    costStructureByEstimate: roundedStructure(byEstimate),
     nonDeductibleVat: money(nonDeductibleVat),
     comparedWithBeforeVat: money(comparedBeforeVat),
   };
@@ -465,7 +643,7 @@ export function computeBidEconomics(input: BidEconomicsInput): BidEconomics {
   const flags: BidFlag[] = [];
 
   // Расчёта нет вовсе: ни одна позиция не посчитана. Говорить о цене нечего.
-  if (cost <= 0 || totals.beforeVat <= 0) {
+  if (cost <= 0 || base.beforeVat <= 0) {
     return {
       status: "EMPTY",
       assumptions,
@@ -473,6 +651,8 @@ export function computeBidEconomics(input: BidEconomicsInput): BidEconomics {
       minMarginPercent: minMargin,
       basis,
       ssr: ssrBasis,
+      law: input.law ?? null,
+      baseOrigin: base.origin,
       nmc,
       nmcBeforeVat: nmcBeforeVat === null ? null : money(nmcBeforeVat),
       ratioToEstimate: null,
@@ -499,7 +679,7 @@ export function computeBidEconomics(input: BidEconomicsInput): BidEconomics {
   const model: CostModel = { vatRate, vatPayer, nmcIncludesVat, kind, cost };
 
   // Верхняя граница поиска: втрое выше любой цены, о которой имеет смысл говорить.
-  const upper = Math.max(nmc ?? 0, comparedBeforeVat * (1 + vatRate), totals.beforeVat * (1 + vatRate)) * 3;
+  const upper = Math.max(nmc ?? 0, comparedBeforeVat * (1 + vatRate), base.beforeVat * (1 + vatRate)) * 3;
   // Сравнение до округления: округлённая маржа «10,00 %» при настоящих 9,995 %
   // занижала минимальную цену на сотни рублей.
   const breakEvenPrice = solvePrice((p) => rawOutcome(model, p, 0).profit >= 0, upper);
@@ -686,6 +866,37 @@ export function computeBidEconomics(input: BidEconomicsInput): BidEconomics {
     flags.push(vatFlag(input, nmcIncludesVat, vatPercent));
   }
 
+  if (base.origin === "AUDIT") {
+    flags.push({
+      code: "BASE_CUSTOMER_AUDIT",
+      severity: "INFO",
+      message:
+        "Основа расчёта — смета заказчика, пересчитанная по ценам зоны и квартала: его объёмы и расход ресурсов, наши цены и нормативы. НМЦК здесь — итог его сметы.",
+    });
+  } else if (base.origin === "AUDIT_LUMP") {
+    flags.push({
+      code: "COST_BASE_LUMP",
+      severity: "MEDIUM",
+      message:
+        "У этой проверки нет разбивки пересчёта по труду, машинам и материалам (смета БИМ или проверка, посчитанная раньше): вся сумма без НДС принята за себестоимость, сметная прибыль не выделена. Оценка осторожная — допустимое снижение занижено; поправки профиля затрат не применены.",
+    });
+  }
+  if (costProfileApplied && costByEstimate > 0 && base.origin !== "AUDIT_LUMP") {
+    const delta = ((cost - costByEstimate) / costByEstimate) * 100;
+    flags.push({
+      code: "COST_PROFILE_APPLIED",
+      severity: "INFO",
+      message: `Себестоимость посчитана с поправками вашего профиля затрат: ${formatRub(cost)} против ${formatRub(costByEstimate)} «как по смете» (${delta < 0 ? "−" : "+"}${Math.abs(delta).toFixed(1).replace(".", ",")} %). Проверьте, что скидки и ставки в профиле актуальны для этого объекта.`,
+    });
+  }
+  if ((input.unverifiedPercent ?? 0) >= 30) {
+    flags.push({
+      code: "UNVERIFIED_SHARE",
+      severity: "MEDIUM",
+      message: `${String(Math.round(input.unverifiedPercent ?? 0))} % затрат не удалось переоценить нашими ценами — они взяты как у заказчика. Расчёт ориентировочный.`,
+    });
+  }
+
   // ---- Надёжность расчёта ----
   const reasons: string[] = [];
   let score = 100;
@@ -708,6 +919,17 @@ export function computeBidEconomics(input: BidEconomicsInput): BidEconomics {
     score -= penalty;
     reasons.push(`Ресурсов без цены: ${String(input.unpricedResources)} (−${String(penalty)})`);
   }
+  if ((input.unverifiedPercent ?? 0) > 0) {
+    const penalty = Math.round(Math.min(40, (input.unverifiedPercent ?? 0) * 0.4));
+    if (penalty > 0) {
+      score -= penalty;
+      reasons.push(`Не переоценено нашими ценами: ${String(Math.round(input.unverifiedPercent ?? 0))} % затрат (−${String(penalty)})`);
+    }
+  }
+  if (base.origin === "AUDIT_LUMP") {
+    score -= 10;
+    reasons.push("Нет разбивки затрат по группам (−10)");
+  }
   // Допущения сводного расчёта, которые двигают цену: срок работ (индекс), назначение объекта (размер резерва).
   for (const assumption of ssr?.assumptions ?? []) {
     if (!assumption.affectsPrice) continue;
@@ -725,6 +947,8 @@ export function computeBidEconomics(input: BidEconomicsInput): BidEconomics {
     minMarginPercent: minMargin,
     basis,
     ssr: ssrBasis,
+    law: input.law ?? null,
+    baseOrigin: base.origin,
     nmc,
     nmcBeforeVat: nmcBeforeVat === null ? null : money(nmcBeforeVat),
     ratioToEstimate,
@@ -788,6 +1012,113 @@ function vatFlag(input: BidEconomicsInput, nmcIncludesVat: boolean, vatPercent: 
     severity: "MEDIUM",
     message: `НДС в документации не определён: НМЦК принята ${asTaken}. Проверьте по извещению — от этого зависят все границы цены.`,
   };
+}
+
+/* ====================== «Моя цена» ====================== */
+
+/** Деньги и вывод для одной цены, которую назвал человек. */
+export interface MyPriceResult extends PriceOutcome {
+  /** Цена, % от НМЦК; null — НМЦК не известна. */
+  readonly percentOfNmc: number | null;
+  /** Снижение от НМЦК, %; отрицательное — цена выше НМЦК; null — НМЦК не известна. */
+  readonly reductionPercent: number | null;
+  readonly verdict: PriceVerdict;
+  /** На сколько процентов могут вырасти затраты до нулевой прибыли (как в таблице цен). */
+  readonly safetyMarginPercent: number;
+  /** Антидемпинговая мера при этом снижении; null — меры нет (снижение меньше 25 %, 223-ФЗ). */
+  readonly antiDumping: AntiDumpingNote | null;
+  /** Цена выше НМЦК: по 44-ФЗ такая заявка отклоняется. */
+  readonly aboveNmc: boolean;
+}
+
+/** Модель затрат и налогов из готового расчёта: все допущения уже в нём. */
+function modelOf(economics: BidEconomics): CostModel {
+  return {
+    vatRate: economics.assumptions.vatPercent / 100,
+    vatPayer: economics.taxKind === "OSNO",
+    nmcIncludesVat: economics.assumptions.nmcIncludesVat,
+    kind: economics.taxKind,
+    cost: economics.basis.cost,
+  };
+}
+
+/**
+ * Что останется компании при названной цене. Цена — в тех же терминах, что НМЦК (с НДС, если НМЦК с НДС): либо ₽,
+ * либо снижение от НМЦК в процентах (нужна НМЦК). null — расчёта нет, цена не названа или не положительна.
+ */
+export function evaluateMyPrice(
+  economics: BidEconomics,
+  input: { readonly price?: number | null; readonly reductionPercent?: number | null },
+): MyPriceResult | null {
+  if (economics.status !== "COMPUTED") return null;
+  const nmc = economics.nmc;
+  let price: number | null = null;
+  if (typeof input.price === "number" && Number.isFinite(input.price) && input.price > 0) {
+    price = input.price;
+  } else if (
+    nmc !== null &&
+    typeof input.reductionPercent === "number" &&
+    Number.isFinite(input.reductionPercent) &&
+    input.reductionPercent < 100
+  ) {
+    price = (nmc * (100 - input.reductionPercent)) / 100;
+  }
+  if (price === null || price <= 0) return null;
+
+  const model = modelOf(economics);
+  const outcome = outcomeAt(model, price, 0);
+  const reduction = nmc === null ? null : (1 - price / nmc) * 100;
+  const verdict: PriceVerdict =
+    outcome.profit < 0 ? "LOSS" : outcome.marginPercent < economics.minMarginPercent ? "BELOW_TARGET_MARGIN" : "OK";
+  return {
+    ...outcome,
+    percentOfNmc: nmc === null ? null : pct((price / nmc) * 100),
+    reductionPercent: reduction === null ? null : pct(reduction),
+    verdict,
+    safetyMarginPercent: solveSafetyMargin(model, price),
+    antiDumping: antiDumpingNote({ law: economics.law, nmc, reductionPercent: reduction }),
+    aboveNmc: nmc !== null && price > nmc + 0.005,
+  };
+}
+
+/** Быстрые кнопки «Моей цены» и шаги таблицы Excel: снижение от НМЦК, %. */
+export const QUICK_REDUCTION_PERCENT: readonly number[] = [5, 10, 15, 20, 25];
+export const LADDER_REDUCTION_PERCENT: readonly number[] = [0, 5, 10, 15, 20, 25, 30];
+
+export interface PriceLadderRow {
+  readonly reductionPercent: number;
+  readonly result: MyPriceResult;
+}
+
+/** Цены от НМЦК до −30 % с шагом 5: каждая со своими деньгами и выводом. Нет НМЦК — пусто. */
+export function buildPriceLadder(economics: BidEconomics, steps: readonly number[] = LADDER_REDUCTION_PERCENT): PriceLadderRow[] {
+  if (economics.status !== "COMPUTED" || economics.nmc === null) return [];
+  const rows: PriceLadderRow[] = [];
+  for (const reductionPercent of steps) {
+    const result = evaluateMyPrice(economics, { reductionPercent });
+    if (result !== null) rows.push({ reductionPercent, result });
+  }
+  return rows;
+}
+
+/** Заголовок блока: три числа одной строкой. Нет расчёта — null. */
+export function bidHeadline(economics: BidEconomics): {
+  readonly breakEven: string;
+  readonly minPrice: string;
+  readonly reduction: string | null;
+  readonly text: string;
+} | null {
+  if (economics.status !== "COMPUTED" || economics.breakEvenPrice === null || economics.minAcceptablePrice === null) return null;
+  const margin = String(economics.minMarginPercent).replace(".", ",");
+  const breakEven = `Безубыточная цена ${formatRub(economics.breakEvenPrice)}`;
+  const minPrice = `Минимальная цена с маржой ${margin} % — ${formatRub(economics.minAcceptablePrice)}`;
+  const reduction =
+    economics.maxReductionPercent === null
+      ? null
+      : economics.maxReductionPercent <= 0
+        ? "Снижать от НМЦК нельзя"
+        : `Можно снижать до ${economics.maxReductionPercent.toFixed(1).replace(".", ",")} % от НМЦК`;
+  return { breakEven, minPrice, reduction, text: [breakEven, minPrice, reduction].filter((part) => part !== null).join(" · ") };
 }
 
 /* ====================== Подписи для пользователя ====================== */

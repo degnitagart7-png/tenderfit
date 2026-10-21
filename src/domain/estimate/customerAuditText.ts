@@ -28,6 +28,16 @@ export function formatPercent(value: number): string {
   return `${Math.abs(value).toFixed(1).replace(".", ",")} %`;
 }
 
+/**
+ * Процент со знаком: «+4,9 %», «−12,0 %». Значение, которое при одном знаке после запятой даёт ноль («−0,04»), печатается «0,0 %» без
+ * знака: «−0,0 %» читается как отрицательная разница там, где её нет.
+ */
+export function formatSignedPercent(value: number): string {
+  const text = formatPercent(value);
+  if (Math.round(Math.abs(value) * 10) === 0) return text;
+  return `${value < 0 ? "−" : "+"}${text}`;
+}
+
 /** «Республика Бурятия (5 зона)», «3 квартал 2026 г.» → «Республика Бурятия, 5 зона, 3 кв. 2026». */
 export function zoneLabel(zoneName: string, period: string): string {
   const zone = /^(.*?)\s*\((\d+\s*зона)\)\s*$/u.exec(zoneName);
@@ -269,4 +279,87 @@ export function notRecognizedLine(item: { documentName: string; estimateName: st
   const name = item.estimateName ?? item.documentName;
   if (/^смета по базисно-индексному методу/iu.test(item.reason)) return `Смета «${name}» — построчно не проверена (${item.reason})`;
   return `Смета «${name}» — не форма 421/пр, построчно не проверена (${item.reason})`;
+}
+
+/**
+ * Причины разницы без двойного счёта: те же строки «откуда разница» (`auditBreakdown`), но только со суммой и без вложенных.
+ * У ресурсной сметы это группы: труд, машины, материалы, НДС, НР, СП, арифметика. У сметы БИМ группы по элементам и
+ * разбивка по источникам — две нарезки одних и тех же денег, поэтому берётся нарезка по источникам: индексы, базисные цены
+ * расценок, нормативы НР и СП, арифметика. Для заключения по смете: из них берутся главные причины.
+ */
+export function auditReasons(report: AuditReport): BreakdownLine[] {
+  const lines = auditBreakdown(report).filter((line) => line.amount !== null);
+  if (!isBimReport(report) || report.bim === undefined) return lines;
+  const { indices, basePrices, norms } = report.bim.impactBySource;
+  const result: BreakdownLine[] = [];
+  if (Math.abs(indices) >= 0.5) {
+    result.push({ group: "SOURCE_INDEX", amount: indices, text: `Индексы пересчёта (письмо Минстроя): ${formatRub(indices, true)}` });
+  }
+  if (Math.abs(basePrices) >= 0.5) {
+    result.push({ group: "SOURCE_BASE", amount: basePrices, text: `Базисные цены расценок (ФЕР-2020): ${formatRub(basePrices, true)}` });
+  }
+  if (Math.abs(norms) >= 0.5) {
+    result.push({ group: "OVERHEAD", amount: norms, text: `Нормативы НР и СП не по приказам 812/пр и 774/пр: ${formatRub(norms, true)}` });
+  }
+  const arithmetic = lines.find((line) => line.group === "ARITHMETIC");
+  if (arithmetic !== undefined) result.push(arithmetic);
+  return result;
+}
+
+export interface UncheckedSummary {
+  /** Позиции, по которым не переоценено ничего (`checkedShare` = 0), и их стоимость у заказчика, ₽. */
+  readonly positions: number;
+  readonly amount: number;
+  /** Позиции, переоценённые частично: часть ресурсов осталась по цене заказчика. */
+  readonly partial: number;
+  /** Строки ресурсов, которые не удалось переоценить, по причинам: число строк и стоимость у заказчика, ₽. */
+  readonly byReason: readonly { readonly kind: UncheckedItem["kind"]; readonly label: string; readonly rows: number; readonly amount: number }[];
+}
+
+/** Что не удалось переоценить и почему: для вывода в заключении. Тексты причин — те же, что в списке «Не проверено». */
+export function uncheckedSummary(report: AuditReport): UncheckedSummary {
+  const none = report.positions.filter((position) => position.checkedShare <= 0);
+  const partial = report.positions.filter((position) => position.checkedShare > 0 && position.checkedShare < 0.999);
+  const reasons = new Map<UncheckedItem["kind"], { rows: number; amount: number }>();
+  for (const item of report.unchecked) {
+    const entry = reasons.get(item.kind) ?? { rows: 0, amount: 0 };
+    reasons.set(item.kind, { rows: entry.rows + item.positions, amount: entry.amount + item.amount });
+  }
+  return {
+    positions: none.length,
+    amount: none.reduce((sum, position) => sum + position.customerTotal, 0),
+    partial: partial.length,
+    byReason: [...reasons.entries()]
+      .map(([kind, value]) => ({ kind, label: UNCHECKED_KIND[kind], rows: value.rows, amount: value.amount }))
+      .sort((a, b) => b.amount - a.amount),
+  };
+}
+
+/** Короткие русские подписи флагов позиции для экрана: сырые коды типов находок пользователю не показываются. */
+export const FINDING_FLAG_LABEL: Readonly<Record<AuditFindingType, string>> = {
+  RESOURCE_PRICE: "цены ресурсов",
+  OUR_PRICE_MISSING: "нет нашей цены",
+  CUSTOMER_PRICE_NO_COMPARE: "цена по КП",
+  UNIT_MISMATCH: "единицы различаются",
+  ARITHMETIC: "арифметика",
+  OVERHEAD_RATE: "норматив НР",
+  PROFIT_RATE: "норматив СП",
+  RATE_NOT_CHECKED: "норматив не проверен",
+  COEFFICIENTS: "коэффициенты к норме",
+  LIMITED_COSTS: "зимнее и временные здания",
+  OUTDATED_PRICE_LEVEL: "устаревший уровень цен",
+  VAT_RATE: "ставка НДС",
+  ZONE_MISMATCH: "другая ценовая зона",
+  SECTIONS_SUM: "итоги разделов",
+  BASE_PRICE: "базисная цена",
+  INDEX_VALUE: "индексы",
+  INDEX_QUARTER: "квартал индексов",
+  INDEX_NOT_CHECKED: "индексы не сверены",
+  FER_PRICE: "цена ФЕР-2020",
+  BASE_NOT_CHECKED: "не проверено",
+};
+
+/** Подпись флага; неизвестный код (отчёт новее экрана) — нейтральное слово, а не сырой код. */
+export function flagLabel(flag: string): string {
+  return (FINDING_FLAG_LABEL as Record<string, string>)[flag] ?? "особенность расчёта";
 }

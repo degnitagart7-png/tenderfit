@@ -16,6 +16,7 @@ import type {
   TenderVerdict,
 } from "@/domain/enums";
 import type { DocumentTerms } from "@/domain/documentTerms";
+import type { CompanyCostProfile } from "@/domain/estimate/companyCostProfile";
 
 /** Реэкспорт перечислений для удобства: доменные типы импортируются из одного места. */
 export type {
@@ -221,6 +222,12 @@ export interface CompanyProfile {
   experienceTotals: ExperienceTotals;
   /** Загруженные документы компании. */
   documents: CompanyDocument[];
+  /**
+   * Профиль затрат: чем фактическая себестоимость компании отличается от сметной (скидка на материалы, свой труд,
+   * доля накладных). Нет поля — поправок нет, расчёт цены участия идёт «как по смете». Правится в «Настройки → Профиль»
+   * и прямо в блоке «Экономика участия».
+   */
+  costProfile?: CompanyCostProfile;
 }
 
 /* ============================== Профиль поиска ============================== */

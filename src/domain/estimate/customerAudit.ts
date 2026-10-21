@@ -142,6 +142,23 @@ export interface AuditPosition {
   readonly flags: readonly AuditFindingType[];
   /** Доля прямых затрат позиции, которую удалось переоценить. */
   readonly checkedShare: number;
+  /** Объём и единица позиции у заказчика (для заключения по смете); у отчётов, посчитанных раньше, полей нет. */
+  readonly quantity?: number | null;
+  readonly unit?: string;
+}
+
+/**
+ * Смета заказчика по нашим ценам и нормативам, разложенная по группам затрат, ₽ без НДС: основа «Экономики участия» для
+ * проверки сметы (`bidAuditBase.ts`). Складывается в `repricedTotal` без НДС. «Прочие» — позиции без ресурсов (цена заказчика прямо
+ * в строке) и остаток итога, не попавший в позиции. Нет у отчётов, посчитанных до появления поля, и у смет БИМ.
+ */
+export interface AuditOurCosts {
+  readonly labour: number;
+  readonly machines: number;
+  readonly materials: number;
+  readonly other: number;
+  readonly overhead: number;
+  readonly profit: number;
 }
 
 export interface ImpactSummary {
@@ -179,6 +196,9 @@ export type AuditVerdict = "UNDERSTATED" | "OVERSTATED" | "MATCH";
 export interface AuditReport {
   readonly documentName: string;
   readonly estimateName: string | null;
+  /** Номер сметы из шапки («02-01-01») и наименование работ («Ремонт кровли»): из них строится название сметы на экране и в файле. Нет полей — отчёт посчитан раньше. */
+  readonly estimateNumber?: string | null;
+  readonly title?: string | null;
   /** «ВСЕГО по смете» заказчика; без итога в тексте — сумма позиций (`totalMissing`). */
   readonly customerTotal: number;
   readonly totalMissing: boolean;
@@ -214,6 +234,8 @@ export interface AuditReport {
   readonly method?: "RESOURCE_INDEX" | "BASE_INDEX";
   /** Сведения аудита БИМ-сметы: чем проверены базисные цены и индексы. */
   readonly bim?: BimAuditDetails;
+  /** Пересчитанная смета по группам затрат: нет у смет БИМ и у отчётов, посчитанных раньше. */
+  readonly ourCosts?: AuditOurCosts;
 }
 
 /* ------------------------------ Помощники ------------------------------ */
@@ -334,6 +356,8 @@ interface PositionOutcome {
   /** Базис заказчика против базиса ФСБЦ-2022: сколько сверено и сколько совпало. */
   readonly baseCompared: number;
   readonly baseMatched: number;
+  /** Позиция по нашим ценам, по группам затрат, ₽ без НДС. */
+  readonly ours: AuditOurCosts;
 }
 
 export function emptyImpacts(): Record<ImpactGroup, { amount: number; rows: number }> {
@@ -475,6 +499,8 @@ function auditPosition(position: CustomerPosition, ctx: AuditContext): PositionO
         diff: 0,
         flags: findings.map((finding) => finding.type),
         checkedShare: 0,
+        quantity: position.quantity,
+        unit: position.unit,
       },
       findings,
       impacts,
@@ -483,6 +509,7 @@ function auditPosition(position: CustomerPosition, ctx: AuditContext): PositionO
       unchecked,
       baseCompared: 0,
       baseMatched: 0,
+      ours: { labour: 0, machines: 0, materials: 0, other: customerTotal, overhead: 0, profit: 0 },
     };
   }
 
@@ -726,6 +753,9 @@ function auditPosition(position: CustomerPosition, ctx: AuditContext): PositionO
   const ourOverhead = ourRate(position.overhead, overheadDelta);
   const ourProfit = ourRate(position.profit, profitDelta);
   const directOur = rowsTotal + groupImpact.LABOUR + groupImpact.MACHINES + groupImpact.MATERIALS;
+  // Те же деньги по группам: строки заказчика по классу кода плюс то, на что их двинула переоценка.
+  const groupRows: Record<DirectGroup, number> = { LABOUR: 0, MACHINES: 0, MATERIALS: 0 };
+  for (const resource of priced) groupRows[groupOf(resource.code)] += resource.currentTotal ?? 0;
   const ourTotal = directOur + ourOverhead + ourProfit;
   const customerBase = stated ?? recomputed;
   const diff = ourTotal - customerBase;
@@ -751,6 +781,8 @@ function auditPosition(position: CustomerPosition, ctx: AuditContext): PositionO
       diff,
       flags,
       checkedShare: directBase > 0 ? Math.min(1, checkedDirect / directBase) : 0,
+      quantity: position.quantity,
+      unit: position.unit,
     },
     findings,
     impacts,
@@ -759,6 +791,14 @@ function auditPosition(position: CustomerPosition, ctx: AuditContext): PositionO
     unchecked,
     baseCompared,
     baseMatched,
+    ours: {
+      labour: groupRows.LABOUR + groupImpact.LABOUR,
+      machines: groupRows.MACHINES + groupImpact.MACHINES,
+      materials: groupRows.MATERIALS + groupImpact.MATERIALS,
+      other: 0,
+      overhead: ourOverhead,
+      profit: ourProfit,
+    },
   };
 }
 
@@ -980,9 +1020,27 @@ export function auditCustomerLsr(lsr: CustomerLsr, ctx: AuditContext): AuditRepo
 
   const top = [...positions].sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff)).slice(0, 10).filter((position) => Math.abs(position.diff) > 0);
 
+  // Смета по нашим ценам по группам (без НДС). Остаток итога, не попавший в позиции (концовки, расхождение итога
+  // разделов), идёт в «прочие» — только положительный: отрицательный остаток группам не приписать.
+  const ours = outcomes.reduce(
+    (sum, outcome) => ({
+      labour: sum.labour + outcome.ours.labour,
+      machines: sum.machines + outcome.ours.machines,
+      materials: sum.materials + outcome.ours.materials,
+      other: sum.other + outcome.ours.other,
+      overhead: sum.overhead + outcome.ours.overhead,
+      profit: sum.profit + outcome.ours.profit,
+    }),
+    { labour: 0, machines: 0, materials: 0, other: 0, overhead: 0, profit: 0 },
+  );
+  const partsTotal = ours.labour + ours.machines + ours.materials + ours.other + ours.overhead + ours.profit;
+  const ourCosts: AuditOurCosts = { ...ours, other: ours.other + Math.max(0, repricedBase - partsTotal) };
+
   return {
     documentName: lsr.documentName,
     estimateName: lsr.estimateName,
+    estimateNumber: lsr.estimateNumber ?? null,
+    title: lsr.title ?? null,
     customerTotal,
     totalMissing,
     repricedTotal,
@@ -1002,6 +1060,7 @@ export function auditCustomerLsr(lsr: CustomerLsr, ctx: AuditContext): AuditRepo
     zone: ctx.priceBook.priceZone,
     period: ctx.priceBook.period,
     priceQuarter: lsr.priceQuarter,
+    ourCosts,
   };
 }
 

@@ -6,6 +6,7 @@ import {
 } from "@/repositories/companyProfileRepository";
 import { demoCompanyProfile } from "@/mocks/companyProfile";
 import { STORAGE_KEYS } from "@/lib/storage";
+import { DEFAULT_COST_PROFILE } from "@/domain/estimate/companyCostProfile";
 import {
   NO_AMOUNT_LIMIT,
   NO_DAYS_LIMIT,
@@ -394,5 +395,55 @@ describe("profileDescribesSubject", () => {
         inn: "032631178302",
       }),
     ).toBe(false);
+  });
+});
+
+/*
+  Профиль затрат лежит в профиле компании: хранится вместе с ним, синхронизируется с аккаунтом как часть профиля
+  и читается из любой версии схемы (поля может не быть вовсе).
+*/
+describe("профиль затрат компании", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("у старого профиля поля нет — и поправок нет", () => {
+    expect(normalizeSavedProfile({ legalName: "ООО Старый" }).costProfile).toBeUndefined();
+    expect(normalizeSavedProfile({ costProfile: null }).costProfile).toBeUndefined();
+  });
+
+  it("сохранённое читается, негодное и выходящее за границы приводится к границам", () => {
+    const profile = normalizeSavedProfile({ costProfile: { materialDiscountPercent: 12, labourFactorPercent: 900, machinesFactorPercent: "x" } });
+
+    expect(profile.costProfile).toMatchObject({ materialDiscountPercent: 12, labourFactorPercent: 250, machinesFactorPercent: 100, overheadRealizationPercent: 100 });
+  });
+
+  it("saveCostProfile: профиль затрат записывается, остальное в профиле не трогается", () => {
+    companyProfileRepository.save({ ...demoCompanyProfile, legalName: "ООО Мой" });
+
+    const saved = companyProfileRepository.saveCostProfile({ ...DEFAULT_COST_PROFILE, labourFactorPercent: 85, subcontractSharePercent: 30 });
+
+    expect(saved.legalName).toBe("ООО Мой");
+    const read = companyProfileRepository.get();
+    expect(read.legalName).toBe("ООО Мой");
+    expect(read.costProfile).toEqual({ ...DEFAULT_COST_PROFILE, labourFactorPercent: 85, subcontractSharePercent: 30 });
+    expect(read.taxSystem).toBe(demoCompanyProfile.taxSystem);
+  });
+
+  it("saveCostProfile нормализует: значение вне границ не попадает в хранилище", () => {
+    const saved = companyProfileRepository.saveCostProfile({ ...DEFAULT_COST_PROFILE, materialDiscountPercent: 999 });
+    expect(saved.costProfile?.materialDiscountPercent).toBe(50);
+  });
+
+  it("профиля ещё нет (ничего не сохранено): профиль затрат создаёт пустой профиль и не подставляет пример", () => {
+    const saved = companyProfileRepository.saveCostProfile({ ...DEFAULT_COST_PROFILE, labourFactorPercent: 90 });
+    expect(saved.legalName).toBe("");
+    expect(saved.capabilities.keywords).toEqual([]);
+  });
+
+  it("профиль затрат ездит вместе с профилем в аккаунт: лежит в том же ключе хранилища", () => {
+    companyProfileRepository.saveCostProfile({ ...DEFAULT_COST_PROFILE, labourFactorPercent: 90 });
+    const raw = JSON.parse(localStorage.getItem(STORAGE_KEYS.profile) ?? "{}") as { costProfile?: { labourFactorPercent: number } };
+    expect(raw.costProfile?.labourFactorPercent).toBe(90);
   });
 });

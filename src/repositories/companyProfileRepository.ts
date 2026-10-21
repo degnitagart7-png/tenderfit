@@ -3,6 +3,7 @@ import { readJSON, writeJSON, STORAGE_KEYS } from "@/lib/storage";
 import { demoCompanyProfile } from "@/mocks/companyProfile";
 import { NO_AMOUNT_LIMIT, NO_DAYS_LIMIT, emptyCompanyProfile } from "@/domain/emptyCompanyProfile";
 import { inferSroKind } from "@/domain/scoring/admission";
+import { normalizeCostProfile, type CompanyCostProfile } from "@/domain/estimate/companyCostProfile";
 
 /**
  * Репозиторий профиля компании. Демонстрационный профиль служит значением
@@ -134,6 +135,8 @@ export function normalizeSavedProfile(
       lastYearAmount: toNumberOrNull(totalsRaw.lastYearAmount),
       last3YearsAmount: toNumberOrNull(totalsRaw.last3YearsAmount),
     },
+    // Профиль затрат: только если он был сохранён (у старых профилей поля нет — и поправок нет); значения — в границах.
+    costProfile: raw.costProfile === undefined || raw.costProfile === null ? undefined : normalizeCostProfile(raw.costProfile),
   };
 }
 
@@ -154,6 +157,15 @@ export const companyProfileRepository = {
   },
   save(profile: CompanyProfile): void {
     writeJSON(STORAGE_KEYS.profile, profile);
+  },
+  /**
+   * Сохраняет профиль затрат в профиле компании, не трогая остальные поля. Профиля ещё нет — создаётся пустой
+   * (с ИНН и названием «не заполнено»): профиль затрат нужен расчёту цены, а не поиску, и не должен ждать анкеты.
+   */
+  saveCostProfile(costProfile: CompanyCostProfile): CompanyProfile {
+    const next: CompanyProfile = { ...companyProfileRepository.get(), costProfile: normalizeCostProfile(costProfile) };
+    writeJSON(STORAGE_KEYS.profile, next);
+    return next;
   },
   /** Очищает анкету. Пример сюда не подставляется — см. `fillWithExample`. */
   reset(): CompanyProfile {

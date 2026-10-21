@@ -1,3 +1,4 @@
+import { estimateTitle } from "@/domain/estimate/auditEstimateTitle";
 import { formatNumber } from "@/utils/format";
 import type { MoneyOutlook } from "@/domain/moneyOutlook";
 import type { Tender } from "@/domain/entities";
@@ -101,7 +102,7 @@ export interface ReportCell {
 }
 
 export type ReportBlock =
-  | { kind: "paragraph"; text: string; tone?: ReportTone; bold?: boolean; small?: boolean }
+  | { kind: "paragraph"; text: string; tone?: ReportTone; bold?: boolean; small?: boolean; /** Главная строка раздела: крупнее обычного текста. */ large?: boolean }
   | { kind: "bullets"; items: string[] }
   | {
       kind: "table";
@@ -1134,7 +1135,7 @@ function customerAuditBlocks(audit: NonNullable<DeepAnalysisReportInput["custome
     },
   ];
   for (const report of audit.reports) {
-    const title = report.estimateName ?? report.documentName;
+    const title = estimateTitle(report);
     blocks.push({
       kind: "paragraph",
       text: `${title}: ${auditHeadline(report)}`,
@@ -1276,7 +1277,7 @@ function ssrAuditBlocks(audits: readonly SsrAuditReport[]): ReportBlock[] {
   for (const report of audits) {
     blocks.push({
       kind: "paragraph",
-      text: `${report.estimateName ?? report.documentName}: ${report.conclusion}`,
+      text: `${estimateTitle(report)}: ${report.conclusion}`,
       bold: true,
       tone: report.warnings > 0 ? "bad" : "good",
     });

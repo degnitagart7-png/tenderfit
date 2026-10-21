@@ -17,7 +17,7 @@ import { auditData, reportWithFindings } from "@/test/auditReports";
 
 const auditStart = vi.fn();
 const estimateStart = vi.fn();
-let auditState: { status: string; result: AuditJobData | null; error: string | null } = { status: "idle", result: null, error: null };
+let auditState: { status: string; result: AuditJobData | null; error: string | null; jobId?: string | null } = { status: "idle", result: null, error: null };
 
 vi.mock("@/hooks/useEstimateJob", () => ({
   useEstimateJob: () => ({ status: "idle", result: null, error: null, reused: false, start: estimateStart }),
@@ -109,5 +109,24 @@ describe("DeepAnalysisPanel: аудит сметы заказчика", () => {
     auditState = { status: "failed", result: null, error: "Ни одна смета не подошла под форму 421/пр" };
     await open(tenderWith(ESTIMATE_TEXT));
     expect(screen.getByTestId("audit-error").textContent).toContain("форму 421/пр");
+  });
+
+  it("готовая проверка: заключение со скачиванием Word и «Экономика участия» с ценой закупки", async () => {
+    auditState = { status: "done", jobId: "job-77", result: auditData([reportWithFindings()]), error: null };
+    const tender = tenderWith(ESTIMATE_TEXT);
+    await open(tender);
+
+    expect(screen.getByTestId("audit-verdict")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Скачать заключение \(Word\)/ })).toBeTruthy();
+    expect(screen.getByText("Экономика участия по смете заказчика")).toBeTruthy();
+    const bid = screen.getByTestId("audit-bid");
+    expect(bid.textContent).toContain("НМЦК — цена закупки");
+    expect(screen.getByRole("button", { name: /Скачать расчёт \(Excel\)/ })).toBeTruthy();
+  });
+
+  it("проверки нет — ни заключения, ни экономики по смете заказчика", async () => {
+    await open(tenderWith(ESTIMATE_TEXT));
+    expect(screen.queryByTestId("audit-verdict")).toBeNull();
+    expect(screen.queryByText("Экономика участия по смете заказчика")).toBeNull();
   });
 });

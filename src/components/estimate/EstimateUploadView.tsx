@@ -6,6 +6,7 @@ import { Calculator, ChevronDown, FileText, ShieldCheck, Upload, X } from "lucid
 import { useSearchParams } from "next/navigation";
 
 import { Badge, Button, Input } from "@/components/ui/primitives";
+import { AuditBidEconomics } from "@/components/estimate/AuditBidEconomics";
 import { CustomerAuditCard } from "@/components/estimate/CustomerAuditCard";
 import { EstimateHistoryList } from "@/components/estimate/EstimateHistoryList";
 import { EstimateMethodSelect } from "@/components/estimate/EstimateMethodSelect";
@@ -20,12 +21,15 @@ import { lsrBillSection } from "@/domain/estimate/customerLsrBill";
 import { buildLsrSet, lsrSourceInfo } from "@/domain/estimate/customerLsrSet";
 import { hasEstimateOptions, NO_ESTIMATE_OPTIONS, type EstimateOptions } from "@/domain/estimate/estimateOptions";
 import { computeSsrLayer } from "@/domain/estimate/ssrLayer";
+import { NO_ESTIMATE_ADVICE } from "@/domain/estimate/auditConclusion";
 import { useBillEdits } from "@/hooks/useBillEdits";
+import { useCompanyCostProfile } from "@/hooks/useCompanyCostProfile";
 import { useEstimateHistory } from "@/hooks/useEstimateHistory";
 import { useEstimateAuditJob, useEstimateJob, type EstimateJobView } from "@/hooks/useEstimateJob";
 import { usePriceZones } from "@/hooks/usePriceZones";
 import { cn } from "@/lib/cn";
 import { readJsonOrThrow } from "@/lib/readJson";
+import { userFacingError } from "@/lib/userError";
 import { isUnreadableText } from "@/services/documentParser";
 import { parseDocumentSmart } from "@/services/serverDocumentParse";
 import type { ArchiveReport } from "@/types/database";
@@ -51,6 +55,10 @@ import { formatDateTime, formatFileSize } from "@/utils/format";
  * без распознавания сканов). Для закупок Сбербанк-АСТ, Фабриканта и ЭТП ГПБ
  * документы робот не скачивает, человек берёт их на площадке — как правило,
  * архивом. Скан внутри архива пропускается с причиной, и она показана в списке.
+ *
+ * Два режима, две вкладки: «Рассчитать смету» (наша смета по ведомости, цена участия) и «Проверить смету заказчика» (его ЛСР
+ * пересчитывается по ценам зоны и квартала, с заключением в Word и экономикой участия по его смете). Файлы общие: загрузили один раз —
+ * можно и посчитать, и проверить. Режим следует за открытым расчётом: проверка из «Мои расчёты» открывается на своей вкладке.
  *
  * Под формой — «Мои расчёты»: прежние расчёты этого человека от нового к старому (раньше результат жил
  * только на экране и терялся вместе с вкладкой). Расчёт открывается на этой же странице, адрес
@@ -169,7 +177,17 @@ function Step({
   );
 }
 
+type PageMode = "estimate" | "audit";
+
+const MODE_TABS: ReadonlyArray<{ readonly id: PageMode; readonly label: string }> = [
+  { id: "estimate", label: "Рассчитать смету" },
+  { id: "audit", label: "Проверить смету заказчика" },
+];
+
 export function EstimateUploadView() {
+  const [mode, setMode] = useState<PageMode>("estimate");
+  // Профиль компании: налоговая система, маржа и профиль затрат — для «Экономики участия» под результатом.
+  const companyProfile = useCompanyCostProfile();
   const [documents, setDocuments] = useState<LoadedDocument[]>([]);
   const [subject, setSubject] = useState("");
   const [reading, setReading] = useState(false);
@@ -196,6 +214,8 @@ export function EstimateUploadView() {
   const [options, setOptions] = useState<EstimateOptions>(NO_ESTIMATE_OPTIONS);
   const [optionsOpen, setOptionsOpen] = useState(false);
 
+  // Форма свёрнута, пока на странице открыт прежний расчёт (из списка или по ссылке): результат — первое, что видит человек.
+  const [formOpen, setFormOpen] = useState(false);
   const calculating = job.status === "queued" || job.status === "running";
   const auditing = auditJob.status === "queued" || auditJob.status === "running";
 
@@ -232,14 +252,16 @@ export function EstimateUploadView() {
         if ((view.mode ?? "estimate") === "audit") {
           resetEstimate();
           showAudit(view);
+          setMode("audit");
         } else {
           resetAudit();
           showEstimate(view);
+          setMode("estimate");
         }
         if (options.scroll) setTimeout(() => resultTop.current?.scrollIntoView?.({ behavior: "smooth", block: "start" }), 0);
       } catch (err) {
         if (ticket !== openTicket.current) return;
-        setOpenError(err instanceof Error ? err.message : "Расчёт не открылся");
+        setOpenError(userFacingError(err, "Не удалось загрузить расчёт — повторите через минуту."));
       } finally {
         if (ticket === openTicket.current) setOpening(false);
       }
@@ -295,6 +317,11 @@ export function EstimateUploadView() {
 
   // Прежний расчёт из списка: файлов, на которые он опирался, в форме нет.
   const historic = opened !== null && !opened.fresh;
+  // Номер из адреса, который ещё читается, тоже сворачивает форму: иначе она мигнула бы раскрытой и схлопнулась.
+  const collapsed = !formOpen && (historic || (opened === null && urlJobId !== null && openError === null));
+  useEffect(() => {
+    setFormOpen(false);
+  }, [opened?.id]);
 
   // Правки ведомости без закупки живут на экране: объём поправили — смета пересчитана без модели.
   const billEditor = useBillEdits({ tenderId: undefined, jobId: job.jobId, result: job.result });
@@ -411,15 +438,78 @@ export function EstimateUploadView() {
     adopt(id);
   };
 
+  const statusBlock =
+    (calculating || auditing || error !== null || job.error !== null || auditJob.error !== null) ? (
+          <div className="mt-3 space-y-1 text-sm">
+            {calculating && (
+              <WorkProgress
+                title="Считаем смету"
+                hint="Обычно это несколько минут. Страницу можно закрыть: результат сохранится."
+                steps={["Принимаем расчёт", "Читаем ведомость и считаем"]}
+                current={job.status === "queued" ? 0 : 1}
+              />
+            )}
+            {auditing && (
+              <WorkProgress
+                title="Проверяем смету"
+                hint="Это быстро: цены и арифметика сверяются автоматически."
+                steps={["Сверяем цены и нормативы"]}
+                current={0}
+              />
+            )}
+            {error !== null && <p className="text-brick-fg">{error}</p>}
+            {unreadArchives.map((item) => (
+              <div key={item.name} className="muted">
+                <p>
+                  {item.name}: прочитано {item.report.parsed} из {item.report.total} {filesWord(item.report.total)}
+                </p>
+                <SkippedFiles report={item.report} />
+              </div>
+            ))}
+            {job.error !== null && <p className="text-brick-fg">{job.error}</p>}
+            {auditJob.error !== null && <p className="text-brick-fg">{auditJob.error}</p>}
+          </div>
+        ) : null;
+
   return (
     <div className="space-y-5">
       <div>
         <h1 className="text-[26px] font-semibold leading-tight tracking-tight text-foreground">Смета</h1>
         <p className="muted mt-1 max-w-2xl">
-          Локальный сметный расчёт по форме 421/пр из ваших документов — без закупки.
+          {mode === "estimate"
+            ? "Локальный сметный расчёт по форме 421/пр из ваших документов — без закупки."
+            : "Проверка локальной сметы (ЛСР) заказчика: пересчёт по ценам вашей зоны и квартала, вывод «хватит ли денег» и заключение в Word."}
         </p>
+        {!collapsed && (
+        <div role="tablist" aria-label="Что сделать со сметой" className="mt-4 inline-flex rounded-full border border-border bg-panel p-0.5">
+          {MODE_TABS.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={mode === tab.id}
+              onClick={() => setMode(tab.id)}
+              className={cn(
+                "rounded-full px-4 py-1.5 text-[14px] font-medium transition-colors",
+                mode === tab.id ? "bg-accent-strong text-white shadow-sm" : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+        )}
       </div>
 
+      {collapsed ? (
+        <div className="card flex flex-wrap items-center gap-3 px-4 py-3" data-testid="estimate-form-collapsed">
+          <span className="muted min-w-0 flex-1 text-sm">Форма свёрнута: ниже — открытый расчёт.</span>
+          <Button size="sm" variant="secondary" onClick={() => setFormOpen(true)}>
+            {mode === "audit" ? "Новая проверка" : "Новый расчёт"}
+          </Button>
+          {statusBlock !== null && <div className="w-full">{statusBlock}</div>}
+        </div>
+      ) : (
       <div className="card p-5 sm:p-6">
         <div className="divide-y divide-border">
           <Step n={1} title="Объект" hint="Название печатается в шапке сметы.">
@@ -434,7 +524,11 @@ export function EstimateUploadView() {
           <Step
             n={2}
             title="Документы"
-            hint="Ведомость объёмов работ, техническое задание или готовая смета — её сравним с нашим расчётом и проверим по ценам зоны."
+            hint={
+              mode === "estimate"
+                ? "Ведомость объёмов работ, техническое задание или готовая смета — её сравним с нашим расчётом и проверим по ценам зоны."
+                : "Локальная смета заказчика (ЛСР): Excel, PDF или архив документации с площадки — сметы из архива найдём сами."
+            }
           >
             <div
               role="button"
@@ -473,9 +567,7 @@ export function EstimateUploadView() {
                 PDF, Word (docx, doc), Excel (xlsx, xls), OpenDocument (odt, ods), RTF, CSV · файлы читаются у вас в браузере, отправляется только текст
               </p>
               <p className="muted text-[12.5px]">
-                Архивы (zip, rar, 7z) и старые .doc читает сервер, до 50 МБ: загрузите архив документации с площадки как есть. Сканы внутри
-                архива и сканы-картинки не распознаются — они попадут в список «Не прочитано». Родные файлы сметных программ (.gsfx, .xml)
-                тоже не читаются — выгрузите смету в Excel или PDF.
+                Архивы (zip, rar, 7z) и старые .doc читает сервер, до 50 МБ: загрузите архив документации с площадки как есть.
               </p>
               <input
                 ref={fileInput}
@@ -493,6 +585,14 @@ export function EstimateUploadView() {
                 }}
               />
             </div>
+
+            <details className="text-[13px]" data-testid="upload-more">
+              <summary className="muted cursor-pointer select-none">Подробнее о файлах</summary>
+              <p className="muted mt-1.5 text-[12.5px]">
+                Сканы внутри архива и сканы-картинки не распознаются — они попадут в список «Не прочитано». Родные файлы сметных программ
+                (.gsfx, .xml) тоже не читаются — выгрузите смету в Excel или PDF.
+              </p>
+            </details>
 
             {documents.length > 0 && (
               <ul className="divide-y divide-border rounded-control border border-border">
@@ -530,12 +630,24 @@ export function EstimateUploadView() {
                 ))}
               </ul>
             )}
+
+            {mode === "audit" && documents.length > 0 && !canAudit && !reading && (
+              <div className="rounded-control border border-mustard-line bg-mustard-subtle px-3 py-2.5 text-[13.5px] text-mustard-fg" data-testid="audit-no-estimate" role="status">
+                <p className="font-medium">В загруженных файлах смета не распознана.</p>
+                <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                  {NO_ESTIMATE_ADVICE.map((line) => (
+                    <li key={line}>{line}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </Step>
 
           <Step n={3} title="Регион" hint="По нему берутся цены ресурсов ФГИС ЦС.">
             <EstimateRegionPicker zones={priceZones} picked={pickedZone} onPick={setPickedZone} />
           </Step>
 
+          {mode === "estimate" && (
           <Step
             n={4}
             title="Метод и условия работ"
@@ -569,63 +681,47 @@ export function EstimateUploadView() {
               </div>
             )}
           </Step>
+          )}
         </div>
 
         <div className="mt-6 flex flex-wrap items-center gap-3 border-t border-border pt-5">
-          <Button
-            onClick={() => void calculate()}
-            disabled={documents.length === 0 || calculating || reading || zoneNeeded}
-            className="gap-1.5"
-          >
-            <Calculator className="h-4 w-4" />
-            {calculating ? "Считаем…" : "Рассчитать смету"}
-          </Button>
-          {canAudit && (
+          {mode === "estimate" ? (
+            <>
+              <Button
+                onClick={() => void calculate()}
+                disabled={documents.length === 0 || calculating || reading || zoneNeeded}
+                className="gap-1.5"
+              >
+                <Calculator className="h-4 w-4" />
+                {calculating ? "Считаем…" : "Рассчитать смету"}
+              </Button>
+              {canAudit && (
+                <button
+                  type="button"
+                  className="text-[14px] text-accent-fg underline-offset-2 hover:underline"
+                  onClick={() => setMode("audit")}
+                >
+                  В файлах есть смета заказчика — проверить её
+                </button>
+              )}
+            </>
+          ) : (
             <Button
-              variant="secondary"
               onClick={() => void audit()}
-              disabled={auditing || reading || zoneNeeded}
+              disabled={documents.length === 0 || auditing || reading || zoneNeeded}
               className="gap-1.5"
             >
               <ShieldCheck className="h-4 w-4" />
-              {auditing ? "Проверяем…" : "Проверить смету по ценам зоны"}
+              {auditing ? "Проверяем…" : "Проверить смету заказчика"}
             </Button>
           )}
           {documents.length > 0 && zoneNeeded && <span className="muted text-sm">Выберите регион объекта</span>}
         </div>
 
-        {(calculating || auditing || error !== null || job.error !== null || auditJob.error !== null) && (
-          <div className="mt-3 space-y-1 text-sm">
-            {calculating && (
-              <WorkProgress
-                title="Считаем смету"
-                hint="Обычно это несколько минут. Страницу можно закрыть: результат сохранится."
-                steps={["Принимаем расчёт", "Читаем ведомость и считаем"]}
-                current={job.status === "queued" ? 0 : 1}
-              />
-            )}
-            {auditing && (
-              <WorkProgress
-                title="Проверяем смету"
-                hint="Это быстро: цены и арифметика сверяются автоматически."
-                steps={["Сверяем цены и нормативы"]}
-                current={0}
-              />
-            )}
-            {error !== null && <p className="text-brick-fg">{error}</p>}
-            {unreadArchives.map((item) => (
-              <div key={item.name} className="muted">
-                <p>
-                  {item.name}: прочитано {item.report.parsed} из {item.report.total} {filesWord(item.report.total)}
-                </p>
-                <SkippedFiles report={item.report} />
-              </div>
-            ))}
-            {job.error !== null && <p className="text-brick-fg">{job.error}</p>}
-            {auditJob.error !== null && <p className="text-brick-fg">{auditJob.error}</p>}
-          </div>
-        )}
+        {statusBlock}
       </div>
+
+      )}
 
       <div ref={resultTop} className="scroll-mt-4 space-y-5 empty:hidden">
         {opening && (
@@ -653,7 +749,19 @@ export function EstimateUploadView() {
           </div>
         )}
 
-        {auditJob.result !== null && <CustomerAuditCard audit={auditJob.result} />}
+        {auditJob.result !== null && <CustomerAuditCard audit={auditJob.result} jobId={auditJob.jobId} />}
+        {auditJob.result !== null && auditJob.result.reports.length > 0 && (
+          <div className="card p-4 sm:p-5" data-testid="audit-bid-card">
+            <h2 className="mb-3 text-[15.5px] font-semibold tracking-tight text-foreground">Экономика участия по смете заказчика</h2>
+            <AuditBidEconomics
+              audit={auditJob.result}
+              company={companyProfile.company}
+              costProfile={companyProfile.costProfile}
+              onCostProfileChange={companyProfile.setCostProfile}
+              subject={(historic ? opened.subject?.trim() : "") || subject}
+            />
+          </div>
+        )}
         {!historic && ssrLayer.audits.length > 0 && <SsrAuditCard reports={ssrLayer.audits} />}
         {shownEstimate !== null && (
           <EstimateResult
@@ -662,6 +770,14 @@ export function EstimateUploadView() {
             regNumber={(historic ? opened.subject?.trim() : "") || subject || "расчёт"}
             customerEstimates={!historic && customerEstimates.length > 0 ? customerEstimates : undefined}
             customerLsrs={historic ? [] : customerLsrs}
+            bid={{
+              // На этом экране закупки нет: НМЦК человек вводит сам в блоке «Моя цена».
+              nmc: null,
+              taxSystem: companyProfile.company?.taxSystem ?? "OSNO",
+              minMarginPercent: companyProfile.company?.minMarginPercent ?? 0,
+              costProfile: companyProfile.costProfile,
+              onCostProfileChange: companyProfile.setCostProfile,
+            }}
             ssr={
               historic || ssrLayer.ssr === null
                 ? null

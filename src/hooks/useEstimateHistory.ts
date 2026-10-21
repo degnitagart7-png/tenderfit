@@ -1,5 +1,6 @@
 "use client";
 
+import { userFacingError } from "@/lib/userError";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
@@ -84,7 +85,7 @@ export function useEstimateHistory(): EstimateHistoryState {
       }));
     } catch (err) {
       if (!alive.current) return;
-      setState((current) => ({ ...current, loaded: true, error: err instanceof Error ? err.message : "Список расчётов не загружен" }));
+      setState((current) => ({ ...current, loaded: true, error: userFacingError(err, "Список расчётов не загрузился — повторите через минуту.") }));
     }
   }, []);
 
@@ -105,7 +106,7 @@ export function useEstimateHistory(): EstimateHistoryState {
       }));
     } catch (err) {
       if (!alive.current) return;
-      setState((current) => ({ ...current, loadingMore: false, error: err instanceof Error ? err.message : "Список расчётов не загружен" }));
+      setState((current) => ({ ...current, loadingMore: false, error: userFacingError(err, "Список расчётов не загрузился — повторите через минуту.") }));
     } finally {
       loadingMore.current = false;
     }

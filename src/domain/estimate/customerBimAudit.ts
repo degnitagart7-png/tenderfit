@@ -575,6 +575,8 @@ function auditPosition(estimate: CustomerBim, position: BimPosition, facts: Esti
       diff,
       flags,
       checkedShare: directBase > 0 ? Math.min(1, checkedDirect / directBase) : 0,
+      quantity: position.quantity,
+      unit: position.unit,
     },
     findings,
     impacts,

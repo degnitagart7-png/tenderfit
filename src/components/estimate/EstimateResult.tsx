@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { Download, FileSpreadsheet } from "lucide-react";
 
 import { Badge, Button } from "@/components/ui/primitives";
+import { userFacingError } from "@/lib/userError";
 import { toBillOfWorkCsv } from "@/domain/estimate/export";
 import { toLocalEstimateFormCsv } from "@/domain/estimate/exportForm";
 import type {
@@ -25,6 +26,7 @@ import { formatNumber } from "@/utils/format";
 import type { TaxSystem } from "@/domain/entities";
 import type { TenderLaw } from "@/domain/enums";
 import type { VatStatus } from "@/domain/estimate/vatStatus";
+import type { CompanyCostProfile } from "@/domain/estimate/companyCostProfile";
 import { Fold } from "@/components/ui/Fold";
 import { AppliedNormatives } from "@/components/estimate/AppliedNormatives";
 import { BillTable } from "@/components/estimate/BillTable";
@@ -90,6 +92,10 @@ export interface EstimateBidContext {
   readonly law?: TenderLaw;
   /** Что документация говорит про НДС в цене: от этого зависит начальное значение переключателя. */
   readonly vat?: VatStatus;
+  /** Профиль затрат компании (скидки, свой труд, субподряд); нет — смета «как есть». */
+  readonly costProfile?: CompanyCostProfile;
+  /** Правка профиля затрат в блоке цены: вызывающий код сохраняет её в профиль компании. */
+  readonly onCostProfileChange?: (next: CompanyCostProfile) => void;
 }
 
 /** Сводный расчёт поверх сметы: наш ССР, сравнение с НМЦК и аудиты ССР заказчика (строки заказчика берутся оттуда). */
@@ -172,7 +178,7 @@ export function EstimateResult({
         );
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Не удалось собрать файл");
+      setError(userFacingError(err, "Не удалось собрать файл — повторите через минуту."));
     } finally {
       setBusy(null);
     }
@@ -202,7 +208,7 @@ export function EstimateResult({
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Не удалось собрать книгу");
+      setError(userFacingError(err, "Не удалось собрать книгу — повторите через минуту."));
     } finally {
       setBusy(null);
     }
@@ -319,8 +325,8 @@ export function EstimateResult({
 
         {bid !== undefined && (
           <Fold
-            title="Цена участия"
-            summary="Безубыточная цена, допустимое снижение и запас прочности"
+            title="Экономика участия"
+            summary="Безубыточная цена, минимальная цена с вашей маржой, «моя цена» и расчёт в Excel"
             defaultOpen
           >
             <BidEconomicsCard
@@ -335,6 +341,9 @@ export function EstimateResult({
               law={bid.law}
               vat={bid.vat}
               ssr={ssr?.result ?? null}
+              subject={regNumber}
+              costProfile={bid.costProfile}
+              onCostProfileChange={bid.onCostProfileChange}
             />
           </Fold>
         )}
