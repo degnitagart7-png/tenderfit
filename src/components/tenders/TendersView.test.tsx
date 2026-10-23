@@ -340,7 +340,7 @@ describe("TendersView — порядок выдачи по свежести", ()
     mount(feed());
 
     expect(screen.getByText(/^Найдено 1$/)).toBeTruthy();
-    expect(screen.getByText("Свежая находка Контур")).toBeTruthy();
+    expect(screen.getAllByText("Свежая находка Контур").length).toBeGreaterThan(0);
     expect(screen.queryByText(demoTenders[0]!.subject)).toBeNull();
   });
 
@@ -353,7 +353,7 @@ describe("TendersView — порядок выдачи по свежести", ()
     fireEvent.click(screen.getByRole("button", { name: /Снять фильтр: Партия/ }));
 
     expect(screen.getByText(/^Найдено 11$/)).toBeTruthy();
-    expect(screen.getByText(demoTenders[0]!.subject)).toBeTruthy();
+    expect(screen.getAllByText(demoTenders[0]!.subject).length).toBeGreaterThan(0);
     sessionStorage.clear();
   });
 });

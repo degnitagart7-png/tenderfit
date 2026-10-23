@@ -60,6 +60,14 @@ describe("выжимка профиля для поиска на площадк�
     expect(request?.regions).toEqual(["Республика Бурятия"]);
   });
 
+  it("один регион под разными названиями уходит один раз", () => {
+    const withShort: CompanyProfile = {
+      ...company,
+      restrictions: { ...company.restrictions, workRegions: ["Бурятия", "Москва"] },
+    };
+    expect(buildProfileSearchRequest([searchProfile], withShort)?.regions).toEqual(["Республика Бурятия", "Москва"]);
+  });
+
   it("пустой профиль — null: остаётся общий обход", () => {
     expect(buildProfileSearchRequest([], emptyCompanyProfile)).toBeNull();
   });

@@ -178,11 +178,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <div className="min-h-screen flex bg-background">
+    <div className="min-h-dvh flex bg-background">
       {/* Sidebar — тёплая подложка, отделена линией, а не тенью. */}
       <aside
         className={cn(
-          "w-[256px] shrink-0 bg-sidebar flex-col fixed inset-y-0 left-0 z-40 transition-transform lg:sticky lg:top-0 lg:h-screen lg:translate-x-0",
+          "w-[256px] shrink-0 bg-sidebar flex-col fixed inset-y-0 left-0 z-40 transition-transform lg:sticky lg:top-0 lg:h-dvh lg:translate-x-0",
           "border-r border-border",
           mobileOpen ? "flex translate-x-0" : "hidden lg:flex",
         )}

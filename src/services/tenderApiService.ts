@@ -13,6 +13,7 @@ import { mockTenderAnalysisProvider } from "@/adapters/tender-analysis/mockTende
 import type { TenderLaw, TenderDataSource, TenderRow as TenderRowDB } from "@/types/database";
 import { applyDocumentTerms, parseDocumentTerms } from "@/domain/documentTerms";
 import { createSharedRequestCache } from "@/lib/sharedRequest";
+import { cardVerdictRepository, profileFingerprint } from "@/repositories/cardVerdictRepository";
 
 /**
  * Сервис закупок для работы с реальным API (Supabase + ЕИС).
@@ -301,6 +302,8 @@ export const tenderApiService = {
   ): Promise<TenderRow[]> {
     const dbRows = await this.listAll(filters, options);
     const rows: TenderRow[] = [];
+    // Итоги открытых карточек (по документации) сильнее оценки по реквизитам.
+    const cardVerdicts = cardVerdictRepository.allFor(profileFingerprint(profile));
 
     for (const row of dbRows) {
       /*
@@ -315,7 +318,10 @@ export const tenderApiService = {
       */
       try {
         const tender = dbRowToTender(row);
-        const analysis = await mockTenderAnalysisProvider.analyze(tender, profile);
+        const computed = await mockTenderAnalysisProvider.analyze(tender, profile);
+        const card = cardVerdicts.get(tender.id);
+        const analysis =
+          card === undefined ? computed : { ...computed, verdict: card.verdict, fitScore: card.fitScore };
         rows.push({
           tender,
           analysis,
@@ -369,6 +375,12 @@ export const tenderApiService = {
       */
       const tender = { ...dbRowToTender(row), documents: await loadDocuments(id) };
       const analysis = await mockTenderAnalysisProvider.analyze(tender, profile);
+      // Списки показывают этот же итог (см. cardVerdictRepository): карточка видит документацию.
+      cardVerdictRepository.save(id, {
+        verdict: analysis.verdict,
+        fitScore: analysis.fitScore,
+        profileKey: profileFingerprint(profile),
+      });
       return {
         tender,
         analysis,

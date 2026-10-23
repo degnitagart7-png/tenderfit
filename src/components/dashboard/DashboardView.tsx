@@ -319,12 +319,13 @@ export function DashboardView() {
   );
 
   /*
-    Имя в приветствии: профиль может существовать с пустым названием компании
-    (его создаёт мастер первого запуска), и «Здравствуйте, » с висящей запятой
-    читалось как поломка. Пустое после trim — обычный заголовок.
+    Заголовок — «Сегодня», название компании — первой частью строки под ним.
+    Приветствие с полным названием («Здравствуйте, ИП Иванов Иван Иванович
+    «ТехноПоставка»») занимало три строки на телефоне и сталкивало кнопку поиска
+    с правого края на ноутбуке (проверка 24.10.2026). Пустое после trim
+    название не печатается: висящая точка-разделитель читалась бы как поломка.
   */
   const legalName = profile?.legalName.trim() ?? "";
-  const heading = legalName ? `Здравствуйте, ${legalName}` : "Сегодня";
 
   const urgentWindow = `${URGENT_DEADLINE_DAYS} ${pluralRu(URGENT_DEADLINE_DAYS, ["день", "дня", "дней"])}`;
 
@@ -334,10 +335,18 @@ export function DashboardView() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div className="min-w-0">
-          <h1 className="text-[24px] font-semibold tracking-tight text-foreground">{heading}</h1>
+          <h1 className="text-[24px] font-semibold tracking-tight text-foreground">Сегодня</h1>
           {/* Дата выводится только после загрузки: до неё `now` берётся на сервере
               и в другом часовом поясе, и первая отрисовка разошлась бы с клиентской. */}
           <p className="mt-1.5 text-[15.5px] text-muted-foreground">
+            {legalName && (
+              <>
+                <span className="font-medium text-foreground" data-testid="dashboard-company">
+                  {legalName}
+                </span>{" "}
+                ·{" "}
+              </>
+            )}
             {loading ? (
               "Загрузка…"
             ) : (
@@ -837,11 +846,13 @@ function TodayRow({
           <div className="min-w-0">
             <Link
               href={`/tenders/${row.tender.id}`}
-              className="line-clamp-2 text-[14.5px] font-medium text-foreground hover:text-accent-fg sm:line-clamp-1"
+              className="line-clamp-2 text-[14.5px] font-medium text-foreground hover:text-accent-fg"
             >
               {row.tender.subject}
             </Link>
-            <p className="mt-0.5 text-[13.5px] text-muted-foreground">
+            {/* Предмет — две строки, заказчик — одна: название заказчика капслоком из
+                ЕИС занимало до шести строк, а сам предмет обрезался до «Выполнение работ по…». */}
+            <p className="mt-0.5 line-clamp-1 text-[13.5px] text-muted-foreground" title={meta.join(" · ")}>
               {meta.length > 0 && <>{meta.join(" · ")} · </>}
               <span className="num">
                 {formatTenderPrice(row.tender.financial.price, row.tender.financial.currency)}
@@ -906,7 +917,7 @@ function InWorkRow({ row, now }: { row: TenderRow; now: Date }) {
       <div className="min-w-0">
         <Link
           href={`/tenders/${row.tender.id}`}
-          className="line-clamp-2 text-[15.5px] font-medium text-foreground hover:text-accent-fg sm:line-clamp-1"
+          className="line-clamp-2 text-[15.5px] font-medium text-foreground hover:text-accent-fg"
         >
           {row.tender.subject}
         </Link>
@@ -941,7 +952,7 @@ function UrgentRow({ row, now }: { row: TenderRow; now: Date }) {
       <div className="min-w-0">
         <Link
           href={`/tenders/${row.tender.id}`}
-          className="line-clamp-1 text-[14.5px] font-medium text-foreground hover:text-accent-fg"
+          className="line-clamp-2 text-[14.5px] font-medium leading-snug text-foreground hover:text-accent-fg"
         >
           {row.tender.subject}
         </Link>

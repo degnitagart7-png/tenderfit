@@ -8,6 +8,7 @@ import { Button, Card, Checkbox, Field, Input } from "@/components/ui/primitives
 import { TagListInput } from "@/components/onboarding/TagListInput";
 import { RegionPicker } from "@/components/ui/RegionPicker";
 import { lawLabels } from "@/lib/labels";
+import { formatCompactRub } from "@/utils/format";
 import { accountSync } from "@/services/accountSync";
 import { demandReporter } from "@/services/demandReporter";
 
@@ -259,7 +260,7 @@ export function SearchProfilesView() {
                   {p.laws.map((l) => lawLabels[l]).join(", ")} ·{" "}
                   {p.regions.length > 0 ? p.regions.join(", ") : "все регионы"}
                   {p.minPrice != null || p.maxPrice != null
-                    ? ` · ${p.minPrice ?? 0}—${p.maxPrice ?? "∞"} ₽`
+                    ? ` · ${priceRangeText(p.minPrice, p.maxPrice)}`
                     : ""}
                 </p>
                 <p className="text-xs text-muted-foreground mt-1">
@@ -297,4 +298,14 @@ export function SearchProfilesView() {
       </div>
     </div>
   );
+}
+
+/** «1 млн – 9 млн ₽», «до 700 млн ₽», «от 30 тыс ₽»: «1000000—9000000 ₽» приходилось считать по разрядам. */
+function priceRangeText(min: number | null, max: number | null): string {
+  const from = min != null && min > 0 ? formatCompactRub(min) : null;
+  const to = max != null && max > 0 ? formatCompactRub(max) : null;
+  if (from !== null && to !== null) return `${from.replace(/ ₽$/, "")} – ${to}`;
+  if (to !== null) return `до ${to}`;
+  if (from !== null) return `от ${from}`;
+  return "любая цена";
 }

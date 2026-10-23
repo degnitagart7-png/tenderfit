@@ -221,7 +221,7 @@ describe("BidEconomicsCard: НДС из документации", () => {
   it("допущение: предупреждение и отдельная пометка выше по странице", () => {
     render(<BidEconomicsCard {...base} vat={vat({ basis: "ASSUMPTION" })} />);
 
-    expect(screen.getByTestId("vat-basis").textContent).toBe("⚠ НДС в документации не определён, принято «с НДС» — проверьте");
+    expect(screen.getByTestId("vat-basis").textContent).toBe("НДС в документации не определён, принято «с НДС» — проверьте");
     expect(screen.getByText(/НДС в документации не определён: НМЦК принята с НДС 20 %/)).toBeTruthy();
   });
 

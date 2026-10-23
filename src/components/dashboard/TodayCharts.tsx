@@ -176,6 +176,13 @@ export function DeadlineChart({
   }
 
   const max = Math.max(1, ...days.map((d) => d.count));
+  /*
+    Число над столбиком — только у сегодняшнего дня и у пика. Две недели в узкой
+    правой колонке дают столбик шириной 10–12px, и трёхзначные числа над каждым
+    сливались в «18014018123165» (проверка 24.10.2026). Остальные дни называют
+    число в подсказке и в подписи для чтения с экрана.
+  */
+  const peakOffset = days.reduce((best, d) => (d.count > best.count ? d : best), days[0]!).offset;
   const summary = days
     .filter((d) => d.count > 0)
     .map((d) => `${d.offset === 0 ? "сегодня" : d.date.toLocaleDateString("ru-RU", { day: "numeric", month: "long" })} — ${d.count}`)
@@ -198,13 +205,8 @@ export function DeadlineChart({
               data-count={day.count}
               className="flex min-w-0 flex-1 flex-col"
             >
-              <span
-                className={cn(
-                  "num h-4 text-center text-[12.5px] leading-4",
-                  day.count === 0 ? "text-faint/60" : "font-semibold text-foreground",
-                )}
-              >
-                {day.count}
+              <span className="num h-4 overflow-visible whitespace-nowrap text-center text-[12.5px] font-semibold leading-4 text-foreground">
+                {day.count > 0 && (day.offset === 0 || day.offset === peakOffset) ? day.count : ""}
               </span>
               <div className="flex flex-1 items-end">
                 {/* Нулевой день — тонкая засечка на базовой линии: слот на месте, но не кричит. */}

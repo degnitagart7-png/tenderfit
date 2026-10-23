@@ -681,20 +681,20 @@ describe("DashboardView — заголовок и сводка", () => {
 
   const withName = (legalName: string): CompanyProfile => ({ ...demoCompanyProfile, legalName });
 
-  it("с названием компании здоровается по имени", () => {
+  it("заголовок «Сегодня», название компании — в строке под ним", () => {
     mount([row({ id: "a", subject: "Первая", hoursLeft: 200, verdict: "RECOMMENDED" })]);
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(
-      `Здравствуйте, ${demoCompanyProfile.legalName}`,
-    );
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Сегодня");
+    expect(screen.getByTestId("dashboard-company").textContent).toBe(demoCompanyProfile.legalName);
   });
 
-  it("пустое или пробельное название не оставляет «Здравствуйте,» без имени", () => {
+  it("пустое или пробельное название не печатается", () => {
     for (const legalName of ["", "   "]) {
       const { unmount } = mount(
         [row({ id: "a", subject: "Первая", hoursLeft: 200, verdict: "RECOMMENDED" })],
         { profile: withName(legalName) },
       );
       expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Сегодня");
+      expect(screen.queryByTestId("dashboard-company")).toBeNull();
       unmount();
     }
   });

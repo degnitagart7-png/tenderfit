@@ -35,6 +35,14 @@ const COLUMN_HINTS: Record<PipelineStatus, string> = {
   SKIPPED: "Неподходящее — чтобы не мешало.",
 };
 
+/**
+ * Сколько карточек показывает колонка «Новые». В неё попадает вся база, которую
+ * человек ещё не трогал: 1352 карточки с выпадающим списком у каждой — это не
+ * доска, а вторая лента, и страница ощутимо тормозила (проверка 24.10.2026).
+ * Доска — для решения по лучшим; остальное — в «Закупках» с фильтрами.
+ */
+const NEW_COLUMN_LIMIT = 20;
+
 export function PipelineBoard() {
   const { rows, loading, error, reload } = useTenderData();
   const [statuses, setStatuses] = useState<Record<string, PipelineStatus>>({});
@@ -108,7 +116,7 @@ export function PipelineBoard() {
           className="muted mt-1"
           title="Переносите карточку перетаскиванием или списком на карточке; статус сохраняется в этом браузере."
         >
-          В работе {inWork} из {rows.length}
+          В работе {inWork}
         </p>
         <p
           role="status"
@@ -152,7 +160,7 @@ export function PipelineBoard() {
               </span>
             </div>
             <div className="max-h-[calc(100vh-16rem)] min-h-[120px] space-y-2 overflow-y-auto p-2">
-              {grouped[col].map((r) => {
+              {(col === "NEW" ? grouped[col].slice(0, NEW_COLUMN_LIMIT) : grouped[col]).map((r) => {
                 const status = statuses[r.tender.id] ?? "NEW";
                 const suggested =
                   col === "NEW" && r.analysis.verdict === "RECOMMENDED";
@@ -215,13 +223,14 @@ export function PipelineBoard() {
               {grouped[col].length === 0 && (
                 <p className="muted px-1 py-4 text-center text-xs">{COLUMN_HINTS[col]}</p>
               )}
-              {col === "NEW" && grouped[col].length > 0 && (
-                <p className="muted px-1 pb-1 text-center text-[12.5px]">
-                  {pluralRu(grouped[col].length, [
-                    "закупка в очереди",
-                    "закупки в очереди",
-                    "закупок в очереди",
-                  ])}
+              {col === "NEW" && grouped[col].length > NEW_COLUMN_LIMIT && (
+                <p className="px-1 pb-1 text-center text-[12.5px] text-muted-foreground">
+                  Показаны {NEW_COLUMN_LIMIT} лучших по оценке. Ещё{" "}
+                  <span className="num">{grouped[col].length - NEW_COLUMN_LIMIT}</span>{" "}
+                  {pluralRu(grouped[col].length - NEW_COLUMN_LIMIT, ["закупка", "закупки", "закупок"])} —{" "}
+                  <Link href="/tenders" className="text-accent-fg hover:underline">
+                    в ленте
+                  </Link>
                 </p>
               )}
             </div>

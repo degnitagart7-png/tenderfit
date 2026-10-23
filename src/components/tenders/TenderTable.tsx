@@ -184,6 +184,14 @@ const relevanceColumn: Column = {
   hint: "Насколько закупка подходит под запрос: совпадение слов (60%) и соответствие вашей компании (40%). Наведите на число, чтобы увидеть причины.",
 };
 
+/**
+ * Колонка «Заказчик» — только от 1280px. На ноутбуке 1180px под таблицу остаётся
+ * 856px, а колонки с «Приоритетом» занимали 940: «Оценка» уезжала за край, а заказчик
+ * всё равно обрезался до «АДМИНИСТРАЦ…» (замер 24.10.2026). Ниже 1280 заказчик
+ * печатается строкой под названием, целиком по ширине предмета.
+ */
+const CUSTOMER_HIDDEN = "max-xl:hidden";
+
 /** Срочная строка помечена оранжевой риской у левого края первой ячейки. */
 function UrgentBar() {
   return <span className="absolute inset-y-0 left-0 w-[3px] bg-accent" aria-hidden />;
@@ -258,11 +266,12 @@ export function TenderTable({
       уезжал бы вбок вместе с колонками.
     */
     <div className="card overflow-hidden">
+      <MobileTenderList rows={rows} rowNotes={rowNotes} newIds={newIds} onOpen={onOpen} />
       {/* tabIndex/role/aria-label — требование WCAG 2.1.1 к прокручиваемой
           области: до правых колонок нужно добираться и с клавиатуры, а не
           только колесом или тачпадом. */}
       <div
-        className="scroll-hint-x overflow-x-auto"
+        className="scroll-hint-x overflow-x-auto max-sm:hidden"
         tabIndex={0}
         role="region"
         aria-label="Таблица закупок"
@@ -276,9 +285,11 @@ export function TenderTable({
                 style={{ width: c.width }}
                 title={c.hint}
                 className={cn(
-                  "py-4 text-[12.5px] font-semibold uppercase tracking-[0.07em] text-faint whitespace-nowrap overflow-hidden",
+                  // Регистр предложения у всех заголовков: сортируемые (кнопки) и так печатались
+                  // строчными, и «ЗАКАЗЧИК» капслоком среди них выглядел опечаткой.
+                  "py-4 text-[12.5px] font-semibold text-faint whitespace-nowrap overflow-hidden",
                   c.label === "Оценка" ? "px-2" : "px-3",
-                  c.secondary && (c.label === "Статус" ? statusHidden : "max-lg:hidden"),
+                  c.secondary && (c.label === "Статус" ? statusHidden : CUSTOMER_HIDDEN),
                 )}
               >
                 {c.field ? (
@@ -486,9 +497,9 @@ export function TenderTable({
                       </span>
                     ))}
                   </p>
-                  {/* Ниже lg колонка «Заказчик» скрыта — заказчик здесь. */}
+                  {/* Ниже xl колонка «Заказчик» скрыта — заказчик здесь. */}
                   <p
-                    className="mt-1 truncate text-[12.5px] text-muted-foreground lg:hidden"
+                    className="mt-1 truncate text-[12.5px] text-muted-foreground xl:hidden"
                     title={row.tender.customerName}
                   >
                     {row.tender.customerName}
@@ -497,7 +508,7 @@ export function TenderTable({
                     )}
                   </p>
                 </td>
-                <td className="px-3 py-4 overflow-hidden max-lg:hidden">
+                <td className={cn("px-3 py-4 overflow-hidden", CUSTOMER_HIDDEN)}>
                   {/* line-clamp без block: утилиты обрезки сами задают display,
                       а block его перебивает и текст печатается целиком. */}
                   <span
@@ -596,5 +607,86 @@ export function TenderTable({
         <div className="border-t border-border bg-panel px-4 py-3">{footer}</div>
       )}
     </div>
+  );
+}
+
+/**
+ * Телефон: вместо таблицы — список двустрочных карточек.
+ *
+ * Таблица шириной 780–940px на экране 390px прокручивалась вбок, и до оценки
+ * и срока подачи приходилось листать каждую строку (проверка 24.10.2026). Здесь
+ * в первой строке — предмет и оценка, ниже — заказчик, цена и срок: те же поля,
+ * что в таблице, ни одно не выброшено.
+ */
+function MobileTenderList({
+  rows,
+  rowNotes,
+  newIds,
+  onOpen,
+}: {
+  rows: TenderRow[];
+  rowNotes?: Map<string, string>;
+  newIds?: ReadonlySet<string>;
+  onOpen?: (row: TenderRow) => void;
+}) {
+  return (
+    <ul className="divide-y divide-border sm:hidden" aria-label="Закупки" data-testid="tender-list-mobile">
+      {rows.map((row) => {
+        const critical = isCriticalDeadline(row.tender.deadlines.submissionEnd);
+        const countdown = deadlineCountdown(row.tender.deadlines.submissionEnd);
+        const note = rowNotes?.get(row.tender.id);
+        return (
+          <li key={row.tender.id} className="relative px-4 py-3.5">
+            {critical && <UrgentBar />}
+            <div className="flex items-start justify-between gap-3">
+              <Link
+                href={`/tenders/${row.tender.id}`}
+                className="line-clamp-3 min-w-0 text-[15.5px] font-medium leading-snug text-foreground"
+                onClick={
+                  onOpen === undefined
+                    ? undefined
+                    : (event) => {
+                        event.preventDefault();
+                        onOpen(row);
+                      }
+                }
+              >
+                {newIds?.has(row.tender.id) === true && (
+                  <span className="mr-1.5 inline-flex items-center gap-1 align-[1px] text-[12px] font-semibold text-accent-fg">
+                    <span className="h-1.5 w-1.5 rounded-full bg-accent" aria-hidden />
+                    Новая
+                  </span>
+                )}
+                {row.tender.subject}
+              </Link>
+              <div className="shrink-0" title={verdictScoreTitle(row.analysis.verdict, row.analysis.fitScore)}>
+                <VerdictScore verdict={row.analysis.verdict} fitScore={row.analysis.fitScore} />
+              </div>
+            </div>
+            {note !== undefined && (
+              <p className="mt-1.5 text-[12.5px] leading-snug text-accent-fg">{note}</p>
+            )}
+            <p className="mt-1 truncate text-[13px] text-muted-foreground" title={row.tender.customerName}>
+              {row.tender.customerName}
+              {row.tender.region && <span className="text-faint"> · {row.tender.region}</span>}
+            </p>
+            <p className="mt-1 flex flex-wrap items-baseline gap-x-2 text-[13.5px]">
+              <span className="num text-foreground">
+                {formatTenderPrice(row.tender.financial.price, row.tender.financial.currency)}
+              </span>
+              <span className="text-faint">·</span>
+              <span className={cn("num", critical ? "font-medium text-brick-fg" : "text-muted-foreground")}>
+                до {formatDate(row.tender.deadlines.submissionEnd)}
+              </span>
+              {countdown && <span className={cn("text-[12.5px]", COUNTDOWN_TONE[countdown.tone])}>{countdown.text}</span>}
+            </p>
+            <p className="mt-0.5 text-[12px] text-faint">
+              <span className="num">№ {row.tender.regNumber}</span> · {lawLabels[row.tender.law]} ·{" "}
+              {dataSourceLabels[row.tender.dataSource]}
+            </p>
+          </li>
+        );
+      })}
+    </ul>
   );
 }

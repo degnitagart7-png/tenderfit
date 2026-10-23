@@ -47,8 +47,10 @@ function DigestRow({ item, timeZone }: { item: DigestItem; timeZone: string }) {
   const who = [item.customer, item.region].filter((part) => part.trim() !== "").join(" · ");
   return (
     <li className="rounded-control border border-border bg-panel p-3.5 transition-colors hover:border-border-strong">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0">
+      {/* Оценка — справа и с подписью: на ширине ноутбука она переносилась под строку
+          цены голым «88», и было непонятно, что это за число. */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
           <Link href={`/tenders/${encodeURIComponent(item.id)}`} className="text-sm font-medium text-foreground hover:text-accent-fg">
             {item.subject}
           </Link>
@@ -57,7 +59,10 @@ function DigestRow({ item, timeZone }: { item: DigestItem; timeZone: string }) {
             {priceText(item)} · подача до {formatDeadline(item.submissionEnd, timeZone)}
           </p>
         </div>
-        <FitScore value={item.fitScore} size="sm" />
+        <div className="flex shrink-0 flex-col items-end">
+          <span className="text-[11.5px] text-faint">оценка</span>
+          <FitScore value={item.fitScore} size="sm" />
+        </div>
       </div>
     </li>
   );

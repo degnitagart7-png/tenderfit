@@ -326,7 +326,7 @@ export function Toggle({
       >
         <span
           className={cn(
-            "absolute top-[3px] h-4 w-4 rounded-full bg-white shadow-sm transition-all",
+            "absolute top-[3px] h-4 w-4 rounded-full bg-white shadow-sm transition-transform",
             checked ? "left-[19px]" : "left-[3px]",
           )}
           aria-hidden
@@ -442,7 +442,7 @@ export function ProgressBar({ value, className }: { value: number; className?: s
       aria-valuemax={100}
     >
       <div
-        className="h-full rounded-full bg-accent transition-all"
+        className="h-full rounded-full bg-accent transition-[width]"
         style={{ width: `${Math.max(0, Math.min(100, value))}%` }}
       />
     </div>

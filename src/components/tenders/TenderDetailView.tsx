@@ -325,13 +325,16 @@ export function TenderDetailView({ tenderId }: { tenderId: string }) {
               {placingWayLabels[tender.placingWay]} · {dataSourceLabels[tender.dataSource]}
             </p>
             <h1
-              className="mt-1.5 line-clamp-3 text-[22px] font-semibold leading-snug tracking-tight text-foreground"
+              // Карточка — единственное место, где название читается целиком: три строки
+              // обрывали его на полуслове («…Шовгеновского муниципального…»). Предел в
+              // шесть строк оставлен для перечней на полстраницы.
+              className="mt-1.5 line-clamp-6 text-[22px] font-semibold leading-snug tracking-tight text-foreground"
               title={tender.subject}
             >
               {tender.subject}
             </h1>
             <p
-              className="mt-1 truncate text-sm text-muted-foreground"
+              className="mt-1 line-clamp-2 text-sm text-muted-foreground"
               title={`${tender.customerName}${tender.customerInn ? ` (ИНН ${tender.customerInn})` : ""} · ${tender.region}`}
             >
               {tender.customerName} · {tender.region}
@@ -562,7 +565,7 @@ export function TenderDetailView({ tenderId }: { tenderId: string }) {
                     : "нет данных"
               }
             />
-            <EconRow label="Срок оплаты" value={`${tender.financial.paymentTermDays} дн.`} />
+            <EconRow label="Срок оплаты" value={paymentTermText(tender.financial.paymentTermDays)} />
             <EconRow
               label="Срок исполнения"
               value={
@@ -612,7 +615,7 @@ export function TenderDetailView({ tenderId }: { tenderId: string }) {
                   />
                   <EconRow
                     label="Срок оплаты"
-                    value={`${tender.financial.paymentTermDays} дн.`}
+                    value={paymentTermText(tender.financial.paymentTermDays)}
                   />
                   <EconRow
                     label="Постоплата"
@@ -1225,4 +1228,13 @@ function EconRow({
       </dd>
     </div>
   );
+}
+
+/**
+ * Срок оплаты для строки «Деньги и сроки». Площадки срока не отдают, и разбор
+ * ставит 0: «0 дн.» рядом с «нет данных» у соседних строк читалось как оплата в
+ * день подписания (проверка 24.10.2026). Ноль — это отсутствие данных.
+ */
+function paymentTermText(days: number | null | undefined): string {
+  return days != null && days > 0 ? `${days} дн.` : "нет данных";
 }

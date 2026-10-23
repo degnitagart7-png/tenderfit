@@ -78,6 +78,8 @@ export const STORAGE_KEYS = {
   pdConsent: "tf.pdConsent",
   /** Чьи данные лежат на устройстве (почта владельца); без метки данные считаются чужими. */
   deviceOwner: "tf.deviceOwner",
+  /** Оценки, посчитанные в карточках закупок по документации (cardVerdictRepository). */
+  cardVerdicts: "tf.cardVerdicts",
 } as const;
 
 /**
@@ -107,6 +109,7 @@ const ACCOUNT_SCOPED_KEYS: readonly string[] = [
   STORAGE_KEYS.manualReviews,
   STORAGE_KEYS.importedTenders,
   STORAGE_KEYS.pdConsent,
+  STORAGE_KEYS.cardVerdicts,
   // Отметка последнего поиска: запросы человека (src/domain/searchMarker.ts).
   "tenderfit.lastSearch",
   // Токен админки, введённый человеком (ServerProfilesCard, LlmCostCard).

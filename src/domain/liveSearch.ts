@@ -1,4 +1,5 @@
 import type { CompanyProfile, SearchProfile } from "@/domain/entities";
+import { canonicalRegionNames } from "@/domain/regionCodes";
 import { freeSyncSources } from "@/domain/sources";
 import type { TenderDataSource, TenderLaw } from "@/types/database";
 import { pluralRu } from "@/utils/format";
@@ -185,11 +186,15 @@ export function buildProfileSearchRequest(
   const [query, ...rest] = words;
   if (query === undefined) return null;
 
-  const regions = normalizeLiveRegions([
-    ...enabled.flatMap((p) => p.regions),
-    ...(company?.restrictions.workRegions ?? []),
-    ...(company?.preferences.priorityRegions ?? []),
-  ]);
+  // Канонические названия: «Бурятия» из профиля компании и «Республика Бурятия» из
+  // профиля поиска уходили площадкам двумя регионами (прогон 24.10.2026).
+  const regions = normalizeLiveRegions(
+    canonicalRegionNames([
+      ...enabled.flatMap((p) => p.regions),
+      ...(company?.restrictions.workRegions ?? []),
+      ...(company?.preferences.priorityRegions ?? []),
+    ]),
+  );
   const okpd2 = normalizeLiveOkpd2([
     ...enabled.flatMap((p) => p.okpd2Codes ?? []),
     ...(company?.capabilities.okpd2Codes ?? []),

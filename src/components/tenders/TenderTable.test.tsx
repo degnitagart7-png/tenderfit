@@ -37,8 +37,11 @@ describe("TenderTable", () => {
     render(
       <TenderTable rows={rows} sortField="fitScore" sortDir="desc" onSort={() => {}} />,
     );
-    expect(screen.getByText(rows[0]!.tender.subject)).toBeTruthy();
+    const table = screen.getByRole("region", { name: "Таблица закупок" });
+    expect(within(table).getByText(rows[0]!.tender.subject)).toBeTruthy();
     expect(screen.getAllByRole("row").length).toBe(rows.length + 1); // + шапка
+    // Телефонный список несёт те же строки.
+    expect(within(screen.getByTestId("tender-list-mobile")).getAllByRole("listitem")).toHaveLength(rows.length);
   });
 
   it("таблица меняется после фильтрации: остаются только строки 44-ФЗ", () => {
@@ -145,7 +148,7 @@ describe("TenderTable: результаты поиска", () => {
         onSort={() => {}}
       />,
     );
-    const cell = screen.getByText(/1\s000/);
+    const cell = within(screen.getByRole("region", { name: "Таблица закупок" })).getByText(/1\s000/);
     expect(cell.textContent).toContain("¥");
     expect(cell.textContent).not.toContain("₽");
   });
