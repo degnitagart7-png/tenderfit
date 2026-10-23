@@ -333,7 +333,9 @@ export function DashboardView() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-end justify-between gap-4">
+      {/* Без переноса от sm: длинная строка под заголовком переносится сама, а кнопка
+          остаётся справа. С переносом блока кнопка уезжала под заголовок со сдвигом. */}
+      <div className="flex flex-wrap items-end justify-between gap-4 sm:flex-nowrap">
         <div className="min-w-0">
           <h1 className="text-[24px] font-semibold tracking-tight text-foreground">Сегодня</h1>
           {/* Дата выводится только после загрузки: до неё `now` берётся на сервере

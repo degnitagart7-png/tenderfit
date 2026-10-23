@@ -45,7 +45,9 @@ export function LawSwitcher({
     <div
       role="group"
       aria-label="Закон, по которому проводится закупка"
-      className="inline-flex flex-wrap items-center gap-1 rounded-full border border-border bg-panel p-1 shadow-card"
+      // Одной строкой с прокруткой внутри себя: на телефоне перенос превращал
+      // «таблетку» в двухэтажный овал (проверка 24.10.2026).
+      className="inline-flex max-w-full items-center gap-1 overflow-x-auto whitespace-nowrap rounded-full border border-border bg-panel p-1 shadow-card [scrollbar-width:none] [&>*]:shrink-0"
     >
       <Segment
         label="Все"
