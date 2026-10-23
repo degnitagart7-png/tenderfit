@@ -4,6 +4,7 @@ import {
   conditionPhrase,
   experienceNumbers,
   lackPhrase,
+  otherCheckAction,
   requirementAction,
   requirementTitle,
 } from "@/domain/requirementAction";
@@ -174,7 +175,7 @@ describe("requirementAction: вид требования × статус", () =>
     expect(requirementAction(check("SECURITY", "NOT_MET"), ctx).text).toMatch(/Откройте специальный счёт/);
   });
 
-  it("прочее вместо «автоматически не сверяется» — что именно прочитать и проверить", () => {
+  it("прочее — короткое действие без повтора требования и названия пункта", () => {
     const a = requirementAction(
       check(
         "OTHER",
@@ -184,9 +185,19 @@ describe("requirementAction: вид требования × статус", () =>
       ),
       ctx,
     );
-    expect(a.text).toBe(
-      "Прочитайте пункт «4. Требования к участникам» документации и убедитесь, что компания это выполнит: наличие представительства в регионе.",
+    expect(a.text).toBe("Проверьте, есть ли у компании присутствие в регионе, которое требует заказчик.");
+    expect(a.text).not.toMatch(/Требования к участникам/);
+    // Документы о качестве материалов — действие, а не пересказ требования (замечание 24.10.2026).
+    const certs = requirementAction(
+      check("OTHER", "CHECK", {
+        title: "Сертификаты и паспорта на все применяемые материалы",
+        required_value: "сертификаты качества, технические паспорта и иные документы на все материалы",
+        evidence_section: "Приложение №1. Техническое задание",
+      }),
+      ctx,
     );
+    expect(certs.text).toBe("Запросите эти документы у поставщиков материалов заранее: без них работы не примут.");
+    expect(otherCheckAction("Иное нестандартное условие")).toBe("Сверьте условие с возможностями компании до подачи заявки.");
     // Старая служебная причина тоже не повторяется.
     expect(
       requirementAction(check("OTHER", "CHECK", {}, "Автоматически не сверяется — проверьте по документу."), ctx).text,
