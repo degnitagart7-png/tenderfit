@@ -6,6 +6,9 @@ import { RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/primitives";
 import { WorkProgress } from "@/components/ui/WorkProgress";
 import { syncJobApiService } from "@/services/syncJobApiService";
+import { buildProfileSearchRequest } from "@/domain/liveSearch";
+import { companyProfileRepository } from "@/repositories/companyProfileRepository";
+import { searchProfileRepository } from "@/repositories/searchProfileRepository";
 import { DEFAULT_SYNC_INTERVAL_HOURS } from "@/domain/workerSchedule";
 import { syncNoteWarnings } from "@/domain/syncRunNote";
 import { pluralRu } from "@/utils/format";
@@ -131,7 +134,9 @@ export function useTendersSearch(onFinished?: (info: TendersSearchFinish) => voi
     setFailure(null);
     setWarning(null);
     try {
-      const { job } = await syncJobApiService.enqueueFullSync();
+      // Ищем то, что описал человек: слова, регионы и коды ОКПД2 его профилей.
+      const profile = buildProfileSearchRequest(searchProfileRepository.getAll(), companyProfileRepository.get());
+      const { job } = await syncJobApiService.enqueueFullSync(profile);
       watchedJobId.current = job.id;
       // Повторное нажатие вернуло уже идущее задание: считаем от его начала.
       if (job.created_at) startedAtRef.current = job.created_at;
@@ -198,7 +203,7 @@ export function NewTendersStatus({ search }: { search: TendersSearch }) {
       <div className="rounded-card border border-border bg-panel p-5">
         <WorkProgress
           title="Ищем новые закупки"
-          hint="Поиск идёт в фоне и может занять десятки минут. Можно продолжать работу — лента обновится сама."
+          hint="Поиск идёт в фоне, обычно 1–3 минуты. Можно продолжать работу — лента обновится сама."
           steps={SEARCH_STEPS}
           current={search.step}
         />

@@ -2,6 +2,7 @@ import type { WorkerStatusView } from "@/domain/workerStatus";
 import type { RedactedSyncJob } from "@/domain/syncJobRedaction";
 import type { WorkerHeartbeatRow } from "@/types/database";
 import { createSharedRequestCache } from "@/lib/sharedRequest";
+import type { ProfileSearchRequest } from "@/domain/liveSearch";
 
 /**
  * Клиентский сервис очереди заданий: обращения к /api/sync-jobs.
@@ -114,11 +115,15 @@ export const syncJobApiService = {
    * Отказ приходит текстом причины из ответа, а не кодом статуса: 503 означает,
    * что очередь не настроена, и партнёр обязан увидеть, что чинить.
    */
-  async enqueueFullSync(): Promise<EnqueueSyncJobResponse> {
+  /**
+   * «Найти новые закупки». С выжимкой профиля сервер ищет по профилю человека
+   * (его слова, регионы и коды ОКПД2); без неё — общий обход.
+   */
+  async enqueueFullSync(profile: ProfileSearchRequest | null = null): Promise<EnqueueSyncJobResponse> {
     const res = await fetch("/api/sync-jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind: "full_sync", reason: "press" }),
+      body: JSON.stringify({ kind: "full_sync", reason: "press", ...(profile !== null ? { profile } : {}) }),
     });
     // Очередь изменилась: следующий опрос обязан увидеть новое задание.
     statusCache.invalidate();

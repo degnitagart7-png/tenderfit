@@ -523,17 +523,21 @@ describe("TendersView — профиль поиска применяется к 
     Замечание владельца 12.10.2026: после поиска на площадках результат был
     спрятан — увидеть его можно было только через «Расширенный поиск» →
     «Показать скрытые». Теперь последний поиск виден сразу и первым.
+
+    Но только в выбранном регионе: тестировщик 23.10.2026 с профилем по Бурятии
+    видел «Новых для вас: 268» и Москву в начале ленты — поиск пришёл по всей
+    России, а регион на его строки не действовал.
   */
-  it("результат последнего поиска виден сразу, первым и с пометкой, даже вне региона профиля", () => {
+  it("результат последнего поиска виден сразу и первым, но только в регионе профиля", () => {
     regionProfile("Приморский край");
     const rows = buildRows();
     const outside = rows.find((row) => row.tender.region === "Москва")!;
+    const inside = rows.find((row) => row.tender.region === "Приморский край")!;
     const startedAt = new Date(Date.now() - 60_000).toISOString();
     const withNew = rows.map((row) =>
-      row === outside ? { ...row, tender: { ...row.tender, firstSeenAt: new Date().toISOString() } } : {
-        ...row,
-        tender: { ...row.tender, firstSeenAt: "2026-01-01T00:00:00.000Z" },
-      },
+      row === outside || row === inside
+        ? { ...row, tender: { ...row.tender, firstSeenAt: new Date().toISOString() } }
+        : { ...row, tender: { ...row.tender, firstSeenAt: "2026-01-01T00:00:00.000Z" } },
     );
     vi.mocked(useTenderData).mockReturnValue({
       profile: null,
@@ -551,16 +555,16 @@ describe("TendersView — профиль поиска применяется к 
     openAt("");
     render(<TendersView />);
 
+    // Москва при профиле «Приморский край» не считается и не показывается.
     const banner = screen.getByTestId("last-search-banner");
     expect(banner.textContent).toMatch(/Новых для вас по запросу «поставка»: 1/);
-    // Закупка из Москвы при профиле «Приморский край» стоит первой и подписана.
-    const notes = screen.getAllByTestId("row-note");
-    expect(notes[0]!.textContent).toMatch(/Из последнего поиска/);
-    expect(screen.getAllByText(outside.tender.subject).length).toBeGreaterThan(0);
+    expect(screen.queryAllByText(outside.tender.subject)).toHaveLength(0);
+    expect(screen.getAllByText(inside.tender.subject).length).toBeGreaterThan(0);
 
-    // «Показать только их» — только результат поиска; «Закрыть» — отметка забыта.
+    // «Показать только их» — только результат поиска в регионе; «Закрыть» — отметка забыта.
     fireEvent.click(within(banner).getByRole("button", { name: "Показать только их" }));
     expect(screen.getByText(/^Найдено 1$/)).toBeTruthy();
+    expect(screen.queryAllByText(outside.tender.subject)).toHaveLength(0);
     fireEvent.click(within(banner).getByRole("button", { name: /Закрыть/ }));
     expect(screen.queryByTestId("last-search-banner")).toBeNull();
     expect(localStorage.getItem("tenderfit.lastSearch")).toBeNull();

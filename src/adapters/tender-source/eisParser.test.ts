@@ -296,7 +296,7 @@ describe("buildEisSearchUrl без регионального фильтра", (
     const url = buildEisSearchUrl({
       laws: ["FZ_44", "FZ_223"],
       searchString: "капитальный ремонт",
-      okpd2: ["43.99"],
+      okpd2: [{ code: "43.99", id: 8874001 }],
       offset: 0,
     });
     for (const param of ["oktmo", "region", "district", "customerPlace"]) {

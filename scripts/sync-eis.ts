@@ -153,11 +153,14 @@ import {
   liveExpiryCutoff,
   liveRawData,
   normalizeLiveQuery,
+  normalizeLiveOkpd2,
   normalizeLiveRegions,
   normalizeLiveSynonyms,
+  MAX_PROFILE_KEYWORDS,
 } from "../src/domain/liveSearch";
 import { DEMAND_TTL_DAYS, buildDemandProfiles, type DemandRow } from "../src/domain/demand";
 import { isRelevantToKeywords } from "../src/domain/relevance";
+import { tenderNature } from "../src/domain/procurementNature";
 import { isClosedLongAgo } from "../src/domain/staleTender";
 import { runPool } from "../src/lib/runPool";
 import { resolveLlmEndpoint } from "../src/services/llmGateway";
@@ -187,6 +190,12 @@ const EIS_PUBLISHED_WITHIN_DAYS = 60;
  */
 const REGION_SWEEP_DAYS = 45;
 const REGION_SWEEP_PAGES = 6;
+/**
+ * Страниц по сто на один код ОКПД2: открытых закупок разделов 41–43 в Бурятии за
+ * 45 дней — 45 (24.10.2026), а по всей России без региона их тысячи, и все они
+ * человеку не нужны.
+ */
+const OKPD_SEARCH_PAGES = 2;
 /** Сколько новых закупок за прогон модель оценивает по смыслу (остальное — в следующий). */
 const SENSE_MAX_PER_RUN = 600;
 /** Минимум закупок на слово у ЕИС в плановом сборе. */
@@ -817,11 +826,24 @@ async function main(): Promise<void> {
   }
   const liveMode = liveQuery !== null;
   // Регионы живого поиска: переменная окружения — граница доверия, чистим заново.
+  // Поиск по профилю (кнопка «Найти новые закупки»): слов больше, чем близких слов
+  // живого поиска, и есть коды ОКПД2.
+  const liveProfileMode = liveMode && process.env["SYNC_LIVE_PROFILE"] === "1";
   let liveSynonyms: string[] = [];
   try {
-    liveSynonyms = normalizeLiveSynonyms(liveQuery ?? "", JSON.parse(process.env["SYNC_LIVE_KEYWORDS"] ?? "[]"));
+    liveSynonyms = normalizeLiveSynonyms(
+      liveQuery ?? "",
+      JSON.parse(process.env["SYNC_LIVE_KEYWORDS"] ?? "[]"),
+      liveProfileMode ? MAX_PROFILE_KEYWORDS : undefined,
+    );
   } catch {
     liveSynonyms = [];
+  }
+  let liveOkpd2: string[] = [];
+  try {
+    liveOkpd2 = liveMode ? normalizeLiveOkpd2(JSON.parse(process.env["SYNC_LIVE_OKPD2"] ?? "[]")) : [];
+  } catch {
+    liveOkpd2 = [];
   }
   let liveRegions: string[] = [];
   try {
@@ -899,7 +921,7 @@ async function main(): Promise<void> {
   }
 
   const profiles: SyncProfile[] = liveMode
-    ? [buildLiveProfile(liveQuery, liveRegions, liveSynonyms) as SyncProfile]
+    ? [buildLiveProfile(liveQuery, liveRegions, liveSynonyms, liveOkpd2) as SyncProfile]
     : (pickSyncProfiles(syncConfig.profiles, serverProfiles, demandProfiles) as SyncProfile[]);
   if (profiles.length === 0) {
     console.log("Нет включённых профилей — нечего синхронизировать.");
@@ -914,7 +936,7 @@ async function main(): Promise<void> {
   if (dryRun) console.log("РЕЖИМ --dry-run: данные в Supabase не записываются");
   if (liveMode) {
     console.log(
-      `РЕЖИМ живого поиска: «${liveQuery}»${liveRegions.length > 0 ? ` (регионы: ${liveRegions.join(", ")})` : ""}${liveSynonyms.length > 0 ? ` (близкие слова: ${liveSynonyms.join(", ")})` : ""}. Строки ничего не удаляют, найденное помечается и ` +
+      `РЕЖИМ ${liveProfileMode ? "поиска по профилю" : "живого поиска"}: «${liveQuery}»${liveRegions.length > 0 ? ` (регионы: ${liveRegions.join(", ")})` : ""}${liveSynonyms.length > 0 ? ` (${liveProfileMode ? "слова профиля" : "близкие слова"}: ${liveSynonyms.join(", ")})` : ""}${liveOkpd2.length > 0 ? ` (ОКПД2: ${liveOkpd2.join(", ")})` : ""}. Строки ничего не удаляют, найденное помечается и ` +
         "переживает плановую очистку; платные источники и очередь документов не затрагиваются.",
     );
   }
@@ -1271,7 +1293,8 @@ async function main(): Promise<void> {
                 keywords: [keyword],
                 minPrice: profile.minPrice ?? null,
                 maxPrice: profile.maxPrice ?? null,
-                okpd2Codes: profile.okpd2Codes,
+                // Коды ОКПД2 здесь не передаются: ЕИС сложила бы их со словом через «и», а
+                // профиль означает «слово или код». Коды ищутся своей выдачей ниже.
                 // Регион уходит кодом: ЕИС фильтрует по региону заказчика
                 // (customerPlace), и найденному проставляется этот регион.
                 regions: profileRegions(profile),
@@ -1625,6 +1648,61 @@ async function main(): Promise<void> {
   }
 
   /*
+    Поиск по кодам ОКПД2 (ЕИС): все открытые закупки классов профиля в его регионах,
+    без слов. Класс назначает заказчик, поэтому такая находка — по теме без проверки
+    моделью; из неё убирается только то, где подряд невозможен (покупка квартир под
+    кодом «Здания жилые», мониторинг цен). Коду из выдачи проставляется найденный
+    класс, если карточка своего не дала: лента ищет по нему так же, как по слову.
+  */
+  /** Закупки, найденные по коду ОКПД2: номер → класс профиля. */
+  const okpdMatched = new Map<string, string>();
+  enqueue("ЕИС, Сбербанк-АСТ", async () => {
+    if (!eisAdapter || unreachable.includes("EIS") || (onlySources && !onlySources.includes("EIS"))) return;
+    for (const profile of profiles) {
+      const codes = profile.okpd2Codes ?? [];
+      if (codes.length === 0) continue;
+      const { eisLaws } = profileSources(profile, onlySources);
+      for (const code of codes) {
+        if (eisBlockedRetryAt !== null) return;
+        let fetched: Tender[] = [];
+        try {
+          const { found } = await collectFrom(
+            "ЕИС",
+            `ОКПД2 ${code}${profileRegions(profile).length > 0 ? `: ${profileRegions(profile).join(", ")}` : ""}`,
+            async () => {
+              fetched = await eisAdapter.fetchTenders({
+                laws: eisLaws.length > 0 ? eisLaws : ["FZ_44", "FZ_223"],
+                keywords: [],
+                okpd2Codes: [code],
+                minPrice: profile.minPrice ?? null,
+                maxPrice: profile.maxPrice ?? null,
+                regions: profileRegions(profile),
+                onlyOpen: true,
+                publishedWithinDays: REGION_SWEEP_DAYS,
+                maxPages: OKPD_SEARCH_PAGES,
+                limit: OKPD_SEARCH_PAGES * 100,
+              });
+              return fetched;
+            },
+            unique,
+          );
+          perSource.set("EIS", (perSource.get("EIS") ?? 0) + found);
+          queriedSources.add("EIS");
+        } catch (err) {
+          if (!isEisBlockedError(err)) throw err;
+          markEisBlocked(err, `ОКПД2 ${code}`);
+          return;
+        }
+        for (const t of fetched) {
+          if (!okpdMatched.has(t.regNumber)) okpdMatched.set(t.regNumber, code);
+          const stored = unique.get(t.regNumber);
+          if (stored && stored.okpd2Codes.length === 0) unique.set(t.regNumber, { ...stored, okpd2Codes: [code] });
+        }
+      }
+    }
+  });
+
+  /*
     Обход региона целиком (ЕИС): сначала все открытые закупки региона, затем
     отбор по смыслу ниже — тем же правилом, каким ищет лента. Так находится то,
     что заказчик назвал другими словами, а поиск по слову пропускал.
@@ -1709,6 +1787,8 @@ async function main(): Promise<void> {
     закупки отбираются словами, как остальные.
   */
   const senseFit = new Map<string, "yes" | "maybe" | "no">();
+  // Найденное по коду ОКПД2 модели не показываем: тему уже назвал классификатор.
+  for (const regNumber of okpdMatched.keys()) sweepTopic.delete(regNumber);
   if (sweepTopic.size > 0) {
     let llmReady = true;
     try {
@@ -1781,6 +1861,11 @@ async function main(): Promise<void> {
     const droppedBySource = new Map<TenderDataSource, number>();
     for (const [regNumber, tender] of [...unique]) {
       if (tender.dataSource === "KONTUR") continue;
+      // Найдена по коду ОКПД2 профиля: проходит, если в ней возможен подряд.
+      if (okpdMatched.has(regNumber)) {
+        const nature = tenderNature(tender);
+        if (nature !== "REAL_ESTATE" && nature !== "PRICE_MONITORING") continue;
+      }
       // Закупку региона, по которой есть решение модели, судит модель: проходит
       // только уверенное «подходит». «Возможно» вместе с совпавшими словами
       // пропускало мебель, полигон ТКО и ремонт автобусов (проверено 05.10.2026).

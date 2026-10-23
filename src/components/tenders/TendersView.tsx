@@ -38,7 +38,6 @@ import {
 import { profileDescribesSubject } from "@/domain/emptyCompanyProfile";
 import {
   hiddenReasonsText,
-  nonContractLabel,
   nonContractReason,
   profileIsContractor,
   worksIntent,
@@ -401,9 +400,9 @@ export function TendersView() {
       }
       const nonContract = nonContractReason(hit.row.tender, { words: queryWords, contractor });
       if (nonContract !== null) {
-        if (fromSearch) {
-          notes.set(id, `Из последнего поиска · ${nonContractLabel({ [nonContract]: 1 })}`);
-        } else byNature.set(id, nonContract);
+        // И для найденного последним поиском: квартира не становится подрядом оттого,
+        // что её нашли сегодня.
+        byNature.set(id, nonContract);
       } else if (
         subjectKnown &&
         filters.verdict === "ALL" &&
@@ -430,15 +429,25 @@ export function TendersView() {
     appliedProfile,
   ]);
   /*
-    «Показать только их»: выдача — строки последнего поиска без фильтров ленты
-    (запрос, регионы, профиль), иначе часть найденного снова пропала бы.
+    «Показать только их»: выдача — строки последнего поиска без слов и профиля
+    ленты, иначе часть найденного (отобранного по смыслу) снова пропала бы.
+
+    Регион и природа закупки при этом соблюдаются. Регион человек выбрал сам, и
+    поиск, пришедший по всей России, не вправе выдавать ему Москву поверх Бурятии;
+    покупка квартир и мониторинг цен — не подряд, сколько бы раз их ни нашли.
+    Замечание тестировщика 23.10.2026: «Новые для вас: 268» показывали Москву и
+    «Приобретение жилого помещения» с оценкой «Подходит 83».
   */
   const searchOnlyHits = useMemo(
     () =>
       searchResult === null
         ? []
-        : searchRows([...searchResult.fresh, ...searchResult.known], defaultFilters),
-    [searchResult],
+        : searchRows([...searchResult.fresh, ...searchResult.known], {
+            ...defaultFilters,
+            region: filters.region,
+            regions: filters.regions,
+          }).filter((hit) => nonContractReason(hit.row.tender, { words: queryWords, contractor }) === null),
+    [searchResult, filters.region, filters.regions, queryWords, contractor],
   );
   /*
     Строки последнего поиска, которые фильтры ленты (регион и слова профиля,
@@ -1054,8 +1063,8 @@ export function TendersView() {
       {!loading && searchMarker !== null && searchResult !== null && (
         <LastSearchBanner
           marker={searchMarker}
-          freshCount={searchResult.fresh.length}
-          knownCount={searchResult.known.length}
+          freshCount={searchOnlyHits.filter((hit) => freshSearchIds.has(hit.row.tender.id)).length}
+          knownCount={searchOnlyHits.filter((hit) => !freshSearchIds.has(hit.row.tender.id)).length}
           onlyActive={onlySearch}
           onToggleOnly={() => {
             setOnlySearch((v) => !v);

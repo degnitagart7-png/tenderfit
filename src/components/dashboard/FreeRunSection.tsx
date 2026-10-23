@@ -71,7 +71,7 @@ export function FreeRunSection({
           Поиск на площадках
         </h3>
         <p className="text-[13.5px] leading-relaxed text-muted-foreground">
-          Проверим {FREE_SOURCES_TEXT}. Займёт десятки минут, лента обновится
+          Проверим {FREE_SOURCES_TEXT}. Займёт несколько минут, лента обновится
           сама.{" "}
           <Link href="/admin/jobs" className="underline underline-offset-2">
             Ход работы

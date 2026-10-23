@@ -3,6 +3,7 @@ import { recordRequestEvent, requestEmail } from "@/app/api/auth/requestUser";
 import { NextRequest, NextResponse } from "next/server";
 import {
   SyncJobRequestError,
+  enqueueProfileSearch,
   enqueueWithStatus,
   readWorkerStatus,
 } from "@/services/syncJobService";
@@ -115,7 +116,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
  * Ставит задание воркеру. Из браузера сюда приходит один вид задания:
  *
  * - кнопка «Найти новые закупки» на дашборде ставит `full_sync` с `reason:
- *   "press"` — бесплатный прогон всех источников, которые не стоят денег.
+ *   "press"`. С выжимкой профиля (`profile: { query, keywords, regions, okpd2 }`)
+ *   это поиск по профилю человека (см. `enqueueProfileSearch`), без неё —
+ *   бесплатный прогон всех источников, которые не стоят денег.
  *
  * Задание `documents` браузер не ставит вовсе: номера закупок знает сервер, и он
  * же пишет строку в очередь — `POST /api/kontur/sync` после платного поиска
@@ -158,6 +161,23 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 
   try {
+    // Кнопка «Найти новые закупки» с выжимкой профиля — поиск по профилю человека.
+    // Выжимки нет или она пуста (ни одного слова) — общий обход, как раньше.
+    const profile =
+      typeof body === "object" && body !== null && (body as Record<string, unknown>)["reason"] === "press"
+        ? (body as Record<string, unknown>)["profile"]
+        : undefined;
+    if (profile !== undefined) {
+      const enqueued = await enqueueProfileSearch(profile, requestEmail(request));
+      if (enqueued !== null) {
+        const { view } = await readWorkerStatus();
+        if (!enqueued.deduped) recordRequestEvent(request, { kind: "find_new" });
+        return NextResponse.json(
+          { job: redactSyncJob(enqueued.job), deduped: enqueued.deduped, view },
+          { status: enqueued.deduped ? 200 : 201 },
+        );
+      }
+    }
     // Задание записывается на вошедшего (почта сильнее requestedBy из тела), чтобы
     // его расход и сбои были видны в /admin/users.
     const { job, deduped, view } = await enqueueWithStatus(body, { requestedBy: requestEmail(request) });

@@ -1,3 +1,4 @@
+import type { CompanyProfile, SearchProfile } from "@/domain/entities";
 import { freeSyncSources } from "@/domain/sources";
 import type { TenderDataSource, TenderLaw } from "@/types/database";
 import { pluralRu } from "@/utils/format";
@@ -55,10 +56,17 @@ export function normalizeLiveQuery(raw: string): string | null {
 export const MAX_LIVE_SYNONYMS = 3;
 
 /**
- * Близкие слова запроса, предложенные моделью: чистятся как запрос, без повторов
- * запроса и друг друга, не больше `MAX_LIVE_SYNONYMS`.
+ * Сколько слов профиля, кроме первого, берёт поиск по профилю (кнопка «Найти новые
+ * закупки»). Каждое — запрос к ЕИС и Сбербанк-АСТ; площадкам с карточками уходит
+ * только первое, поэтому семь слов укладываются в минуту.
  */
-export function normalizeLiveSynonyms(query: string, input: unknown): string[] {
+export const MAX_PROFILE_KEYWORDS = 6;
+
+/**
+ * Близкие слова запроса, предложенные моделью: чистятся как запрос, без повторов
+ * запроса и друг друга, не больше `max` (по умолчанию `MAX_LIVE_SYNONYMS`).
+ */
+export function normalizeLiveSynonyms(query: string, input: unknown, max: number = MAX_LIVE_SYNONYMS): string[] {
   if (!Array.isArray(input)) return [];
   const seen = new Set<string>([query.replace(/\s+/g, " ").trim().toLowerCase()]);
   const result: string[] = [];
@@ -70,7 +78,7 @@ export function normalizeLiveSynonyms(query: string, input: unknown): string[] {
     if (seen.has(key)) continue;
     seen.add(key);
     result.push(cleaned);
-    if (result.length >= MAX_LIVE_SYNONYMS) break;
+    if (result.length >= max) break;
   }
   return result;
 }
@@ -102,6 +110,93 @@ export function normalizeLiveRegions(input: unknown): string[] {
   return result;
 }
 
+const MAX_LIVE_OKPD2 = 10;
+const OKPD2_CODE_RE = /^\d{2}(?:\.\d{1,2}(?:\.\d{1,2}(?:\.\d{1,3})?)?)?$/;
+
+/**
+ * Коды ОКПД2 поиска по профилю: «41», «43.21», «43.21.10.120». Не код — мимо,
+ * повторы и хвостовые точки убираются, больше десяти не берётся: каждый код —
+ * отдельная выдача ЕИС в каждом регионе.
+ */
+export function normalizeLiveOkpd2(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  const result: string[] = [];
+  for (const item of input) {
+    if (typeof item !== "string") continue;
+    const code = item.trim().replace(/\s+/g, "").replace(/\.+$/, "");
+    if (!OKPD2_CODE_RE.test(code) || result.includes(code)) continue;
+    result.push(code);
+    if (result.length >= MAX_LIVE_OKPD2) break;
+  }
+  return result;
+}
+
+/** Что уходит воркеру по кнопке «Найти новые закупки»: выжимка профиля человека. */
+export interface ProfileSearchRequest {
+  /** Главное слово: по нему ищут и площадки с карточками. */
+  query: string;
+  /** Остальные слова профиля (ЕИС и Сбербанк-АСТ). */
+  keywords: string[];
+  regions: string[];
+  okpd2: string[];
+}
+
+/** Виды работ из описания деятельности: «ремонт помещений, строительство» → два слова. */
+function activityWords(description: string): string[] {
+  return description
+    .split(/[,;\n]+/)
+    .map((part) => part.trim())
+    .filter((part) => part.length >= 3);
+}
+
+/**
+ * Выжимка профиля для поиска на площадках.
+ *
+ * Раньше кнопка «Найти новые закупки» запускала общий обход по профилям
+ * владельца и спросу всех посетителей: Москва и Подмосковье чужих тем, двести
+ * пятьдесят секунд, а коды ОКПД2 и регион человека в нём не участвовали вовсе
+ * (замечание тестировщика 23.10.2026). Теперь ищется ровно то, что человек
+ * описал: слова включённых профилей поиска, затем виды работ из профиля
+ * компании; регионы профилей поиска и география компании; коды ОКПД2 оттуда же.
+ *
+ * null — профиль пуст (ни одного слова): тогда остаётся общий обход.
+ */
+export function buildProfileSearchRequest(
+  searchProfiles: readonly SearchProfile[],
+  company: CompanyProfile | null,
+): ProfileSearchRequest | null {
+  const enabled = searchProfiles.filter((p) => p.enabled);
+  const words: string[] = [];
+  const seen = new Set<string>();
+  const addWord = (raw: string): void => {
+    const cleaned = normalizeLiveQuery(raw);
+    if (cleaned === null) return;
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    words.push(cleaned);
+  };
+  for (const profile of enabled) for (const word of profile.keywords) addWord(word);
+  if (company !== null) {
+    const cap = company.capabilities;
+    for (const word of [...cap.works, ...cap.keywords, ...cap.services, ...cap.products]) addWord(word);
+    for (const word of activityWords(company.activityDescription ?? "")) addWord(word);
+  }
+  const [query, ...rest] = words;
+  if (query === undefined) return null;
+
+  const regions = normalizeLiveRegions([
+    ...enabled.flatMap((p) => p.regions),
+    ...(company?.restrictions.workRegions ?? []),
+    ...(company?.preferences.priorityRegions ?? []),
+  ]);
+  const okpd2 = normalizeLiveOkpd2([
+    ...enabled.flatMap((p) => p.okpd2Codes ?? []),
+    ...(company?.capabilities.okpd2Codes ?? []),
+  ]);
+  return { query, keywords: rest.slice(0, MAX_PROFILE_KEYWORDS), regions, okpd2 };
+}
+
 /** Профиль прогона — та же форма, что в `scripts/sync-profiles.json`. */
 export interface LiveProfile {
   name: string;
@@ -112,6 +207,8 @@ export interface LiveProfile {
   minPrice: number | null;
   maxPrice: number | null;
   regions: string[];
+  /** Коды ОКПД2: ЕИС ищет их классы в регионах поиска отдельной выдачей, без слов. */
+  okpd2Codes: string[];
   limitPerKeyword: number;
 }
 
@@ -126,6 +223,7 @@ export function buildLiveProfile(
   query: string,
   regions: readonly string[] = [],
   synonyms: readonly string[] = [],
+  okpd2: readonly string[] = [],
 ): LiveProfile {
   return {
     name: "Живой поиск",
@@ -138,6 +236,7 @@ export function buildLiveProfile(
     minPrice: null,
     maxPrice: null,
     regions: [...regions],
+    okpd2Codes: [...okpd2],
     limitPerKeyword: LIVE_LIMIT_PER_KEYWORD,
   };
 }

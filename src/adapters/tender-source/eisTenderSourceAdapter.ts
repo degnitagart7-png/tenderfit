@@ -20,6 +20,7 @@ import {
 import type { EisCustomerRef } from "@/adapters/tender-source/eisParser";
 import { buildEisUrl } from "@/domain/enums";
 import { fetchEisOkpd2 } from "@/adapters/tender-source/eisOkpd";
+import { resolveOkpd2Ids, type EisOkpd2Ref, type Okpd2ChildrenCache } from "@/adapters/tender-source/eisOkpdTree";
 import { eisGate, isEisBlockStatus, isEisBlockedError, type EisGate } from "@/lib/eisGate";
 
 /**
@@ -81,6 +82,8 @@ export class EisTenderSourceAdapter implements TenderSourceAdapter {
   private readonly fetchImpl: typeof fetch;
   private readonly gate: EisGate;
   private lastRequestAt = 0;
+  /** Дети узлов справочника ОКПД2: дерево не меняется, на прогон хватает одного спуска. */
+  private readonly okpd2Tree: Okpd2ChildrenCache = new Map();
 
   constructor(options: EisAdapterOptions = {}) {
     this.baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
@@ -174,7 +177,24 @@ export class EisTenderSourceAdapter implements TenderSourceAdapter {
     return ref;
   }
 
+  /**
+   * Коды ОКПД2 запроса → позиции справочника ЕИС. undefined — запрос без кодов.
+   * Пустой список при непустых кодах значит «ни одного кода в справочнике нет»:
+   * искать тогда нечего, и выдача по всей сфере вместо классификатора была бы обманом.
+   */
+  private async okpd2Refs(codes: readonly string[] | undefined): Promise<EisOkpd2Ref[] | undefined> {
+    if (codes === undefined || codes.length === 0) return undefined;
+    return resolveOkpd2Ids(
+      codes,
+      async (url) => JSON.parse(await this.getHtml(url, null)) as unknown,
+      this.baseUrl,
+      this.okpd2Tree,
+    );
+  }
+
   async fetchTenders(query: TenderSourceQuery): Promise<Tender[]> {
+    const okpd2 = await this.okpd2Refs(query.okpd2Codes);
+    if (okpd2 !== undefined && okpd2.length === 0) return [];
     const searchString = (query.keywords ?? []).join(" ");
     const limit = query.limit ?? Number.POSITIVE_INFINITY;
     const customerInns = (query.customerInns ?? [])
@@ -195,7 +215,7 @@ export class EisTenderSourceAdapter implements TenderSourceAdapter {
           laws: query.laws,
           minPrice: query.minPrice,
           maxPrice: query.maxPrice,
-          okpd2: query.okpd2Codes,
+          okpd2,
           customerIdOrg: ref.customerIdOrg,
           offset: 0,
         });
@@ -229,7 +249,7 @@ export class EisTenderSourceAdapter implements TenderSourceAdapter {
     const collected: Tender[] = [];
     const seenNumbers = new Set<string>();
     for (const region of targets) {
-      const pages = await this.fetchPages(query, searchString, limit, region);
+      const pages = await this.fetchPages(query, searchString, limit, region, okpd2);
       for (const tender of pages) {
         if (seenNumbers.has(tender.regNumber)) continue;
         seenNumbers.add(tender.regNumber);
@@ -250,6 +270,7 @@ export class EisTenderSourceAdapter implements TenderSourceAdapter {
     searchString: string,
     limit: number,
     region: Region | null,
+    okpd2: readonly EisOkpd2Ref[] | undefined,
   ): Promise<Tender[]> {
     const pages = Math.max(1, Math.floor(query.maxPages ?? 1));
     const pageSize = pages > 1 ? 100 : recordsPerPageFor(query.limit);
@@ -262,7 +283,7 @@ export class EisTenderSourceAdapter implements TenderSourceAdapter {
         laws: query.laws,
         minPrice: query.minPrice,
         maxPrice: query.maxPrice,
-        okpd2: query.okpd2Codes,
+        okpd2,
         onlyOpen: query.onlyOpen,
         customerRegionCode: region?.code,
         publishedFrom: publishedFromOf(query),

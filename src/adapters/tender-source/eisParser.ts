@@ -5,6 +5,7 @@
  */
 import type { PlacingWay, TenderLaw } from "@/domain/enums";
 import { kladrId } from "@/domain/regionCodes";
+import type { EisOkpd2Ref } from "@/adapters/tender-source/eisOkpdTree";
 
 /** URL поисковой выдачи ЕИС с GET-параметрами.
  *
@@ -19,7 +20,11 @@ export function buildEisSearchUrl(params: {
   laws?: TenderLaw[];
   minPrice?: number | null;
   maxPrice?: number | null;
-  okpd2?: string[];
+  /**
+   * Позиции ОКПД2 с номерами справочника ЕИС (см. eisOkpdTree). Голые коды ЕИС
+   * не понимает: параметр `okpd2=41` она молча игнорирует.
+   */
+  okpd2?: readonly EisOkpd2Ref[];
   /** Составной идентификатор заказчика (см. buildCustomerIdOrg). */
   customerIdOrg?: string;
   offset?: number;
@@ -64,8 +69,12 @@ export function buildEisSearchUrl(params: {
     url.searchParams.set("priceMin", String(params.minPrice));
   if (params.maxPrice != null)
     url.searchParams.set("priceMax", String(params.maxPrice));
-  if (params.okpd2 && params.okpd2.length > 0)
-    url.searchParams.set("okpd2", params.okpd2.join(","));
+  if (params.okpd2 && params.okpd2.length > 0) {
+    url.searchParams.set("okpd2Ids", params.okpd2.map((ref) => String(ref.id)).join(","));
+    url.searchParams.set("okpd2IdsCodes", params.okpd2.map((ref) => ref.code).join(","));
+    // Без вложенных позиций раздел «41» находит только закупки с кодом ровно «41»: ноль.
+    url.searchParams.set("okpd2IdsWithNested", "on");
+  }
   if (params.customerIdOrg)
     url.searchParams.set("customerIdOrg", params.customerIdOrg);
   // Морфология включена всегда: без неё «юридические» не находит «юридических»,

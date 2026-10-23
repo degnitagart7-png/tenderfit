@@ -9,6 +9,13 @@ import {
   type WorkerStatusView,
 } from "@/domain/workerStatus";
 import { describeError } from "@/lib/errors";
+import {
+  MAX_PROFILE_KEYWORDS,
+  normalizeLiveOkpd2,
+  normalizeLiveQuery,
+  normalizeLiveRegions,
+  normalizeLiveSynonyms,
+} from "@/domain/liveSearch";
 import { syncJobRepository } from "@/repositories/syncJobRepository";
 import type { SyncJobRow, WorkerStatus } from "@/types/database";
 
@@ -139,6 +146,56 @@ export async function enqueueSyncJob(body: unknown, options?: EnqueueOptions): P
       ...(request.analyze ? { analyze: true } : {}),
     },
     options?.requestedBy ?? request.requestedBy,
+  );
+  return { job, deduped: false };
+}
+
+/**
+ * Поиск по профилю — кнопка «Найти новые закупки».
+ *
+ * Задание ставится как живой поиск (`liveQuery`): у такого своя дорожка воркера, и
+ * ему не приходится ждать планового обхода, который занимает дорожку обхода до
+ * четырёх минут. Ищутся слова, регионы и коды ОКПД2 из профиля человека, поэтому
+ * прогон короче общего обхода по всем темам сервиса: минута вместо трёх-шести
+ * (замечание тестировщика 23.10.2026).
+ *
+ * Выжимка пришла из браузера и чистится заново. Повторное нажатие, пока поиск
+ * того же человека идёт, возвращает его задание. Пустая выжимка (ни одного слова)
+ * — null: вызывающий ставит общий обход, как раньше.
+ */
+export async function enqueueProfileSearch(
+  input: unknown,
+  requestedBy: string | null,
+): Promise<EnqueuedSyncJob | null> {
+  if (typeof input !== "object" || input === null) return null;
+  const raw = input as Record<string, unknown>;
+  const query = typeof raw["query"] === "string" ? normalizeLiveQuery(raw["query"]) : null;
+  if (query === null) return null;
+  const keywords = normalizeLiveSynonyms(query, raw["keywords"], MAX_PROFILE_KEYWORDS);
+  const regions = normalizeLiveRegions(raw["regions"]);
+  const okpd2 = normalizeLiveOkpd2(raw["okpd2"]);
+
+  const active = await syncJobRepository.findActiveLive();
+  if (
+    active !== null &&
+    active.payload?.liveProfile === true &&
+    requestedBy !== null &&
+    active.requested_by === requestedBy
+  ) {
+    return { job: active, deduped: true };
+  }
+
+  const job = await syncJobRepository.create(
+    "full_sync",
+    {
+      liveQuery: query,
+      ...(keywords.length > 0 ? { liveKeywords: keywords } : {}),
+      ...(regions.length > 0 ? { liveRegions: regions } : {}),
+      ...(okpd2.length > 0 ? { liveOkpd2: okpd2 } : {}),
+      liveProfile: true,
+      reason: PRESS_REASON,
+    },
+    requestedBy,
   );
   return { job, deduped: false };
 }

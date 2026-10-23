@@ -123,7 +123,14 @@ import { LaneRunner } from "../src/lib/laneRunner";
 import { analysisJobRepository } from "../src/repositories/analysisJobRepository";
 import type { SyncJobReport, SyncJobRow } from "../src/types/database";
 import { tracksFor, type SyncTrigger } from "../src/domain/sourceCadence";
-import { LIVE_RUN_CAP_MS, normalizeLiveQuery, normalizeLiveRegions, normalizeLiveSynonyms } from "../src/domain/liveSearch";
+import {
+  LIVE_RUN_CAP_MS,
+  MAX_PROFILE_KEYWORDS,
+  normalizeLiveOkpd2,
+  normalizeLiveQuery,
+  normalizeLiveRegions,
+  normalizeLiveSynonyms,
+} from "../src/domain/liveSearch";
 import { ESTIMATE_PARAMETERS } from "../src/services/estimateDefaults";
 import { resolveZoneTender } from "../src/domain/estimate/documentRegion";
 import { defaultBalanceAlertDeps, runLlmBalanceCheck } from "../src/services/llmBalanceAlert";
@@ -757,7 +764,16 @@ async function runFullSyncJob(job: SyncJobRow, config: WorkerConfig): Promise<Sy
           SYNC_LIVE_QUERY: liveQuery,
           // Регионы чистятся заново: payload пришёл из базы, а скрипту уходит переменной окружения.
           SYNC_LIVE_REGIONS: JSON.stringify(normalizeLiveRegions(job.payload?.liveRegions)),
-          SYNC_LIVE_KEYWORDS: JSON.stringify(normalizeLiveSynonyms(liveQuery, job.payload?.liveKeywords)),
+          SYNC_LIVE_KEYWORDS: JSON.stringify(
+            normalizeLiveSynonyms(
+              liveQuery,
+              job.payload?.liveKeywords,
+              job.payload?.liveProfile === true ? MAX_PROFILE_KEYWORDS : undefined,
+            ),
+          ),
+          // Поиск по профилю: коды ОКПД2 и признак режима (чистятся заново по той же причине).
+          SYNC_LIVE_OKPD2: JSON.stringify(normalizeLiveOkpd2(job.payload?.liveOkpd2)),
+          SYNC_LIVE_PROFILE: job.payload?.liveProfile === true ? "1" : "0",
         },
     liveQuery === null ? null : LIVE_RUN_CAP_MS,
   );
