@@ -197,6 +197,11 @@ export function TendersView() {
   }, []);
   /** Что сейчас с поиском на площадках, запущенным из «Что вы ищете?». */
   const [firstSearch, setFirstSearch] = useState<string | null>(null);
+  /*
+    Поиск на площадках идёт прямо сейчас. Не то же самое, что firstSearch !== null:
+    там же лежит и текст сбоя, а при сбое «ищем ещё» было бы неправдой.
+  */
+  const [firstSearchRunning, setFirstSearchRunning] = useState(false);
   const router = useRouter();
   const pathname = usePathname();
   /*
@@ -756,6 +761,14 @@ export function TendersView() {
     chips.length === 0 &&
     !searchProfiles.some((p) => p.keywords.length > 0);
 
+  /*
+    Слова поиска есть — после «Быстрого старта» человеку сказали «профиль заполните
+    потом», и жёсткое «подбор не работает» выглядело бы как ошибка. Слова берём и
+    из профилей поиска, и из задания быстрого старта (профили приходят позже ленты).
+  */
+  const hasSearchWords =
+    searchProfiles.some((p) => p.keywords.length > 0) || (pendingFirst?.queries.length ?? 0) > 0;
+
   /**
     Следить за первым поиском по профилю: из карточки «Что вы ищете?» в ленте или из
     «Быстрого старта» после регистрации (тот запускает поиск и передаёт задание сюда).
@@ -766,6 +779,7 @@ export function TendersView() {
       return;
     }
     setFirstSearch("Ищу ваши закупки на площадках — лента обновится сама, обычно за пару минут.");
+    setFirstSearchRunning(true);
     firstStart.current = { startedAt: first.startedAt, queries: first.queries };
     void waitForFirstSearch(first.jobId);
   };
@@ -783,6 +797,7 @@ export function TendersView() {
               ? "Поиск на площадках не удался. Ваши закупки соберутся при ближайшем плановом сборе."
               : null,
           );
+          setFirstSearchRunning(false);
           const started = firstStart.current;
           firstStart.current = null;
           if (!state.failed && started !== null) {
@@ -797,6 +812,7 @@ export function TendersView() {
       }
     }
     setFirstSearch(null);
+    setFirstSearchRunning(false);
     await reload();
   };
 
@@ -823,7 +839,11 @@ export function TendersView() {
           </h1>
           <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1.5">
             <p className="muted">
-              {loading ? "Загрузка…" : `Найдено ${page.total}`}
+              {loading
+                ? "Загрузка…"
+                : firstSearchRunning
+                  ? `Найдено ${page.total} · ищем ещё на площадках`
+                  : `Найдено ${page.total}`}
             </p>
             {!loading && textQuery === null && (
               <div
@@ -889,7 +909,9 @@ export function TendersView() {
       */}
       {!subjectKnown && (
         <p className="muted">
-          Профиль компании не заполнен — подбор под вас не работает.{" "}
+          {hasSearchWords
+            ? "Лента подобрана по вашему запросу. Чтобы оценка учитывала лицензии, СРО и опыт, заполните профиль компании."
+            : "Профиль компании не заполнен — подбор под вас не работает."}{" "}
           <Link
             href="/settings/profile"
             className="text-accent-fg hover:underline"

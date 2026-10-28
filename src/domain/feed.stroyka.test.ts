@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { CompanyProfile, SearchProfile } from "@/domain/entities";
 import {
   defaultFilters,
@@ -38,6 +38,22 @@ import fixture from "@/domain/__fixtures__/feed/stroyka-buryatia-mo-2026-10-14.j
 
 const NOW = new Date("2026-10-14T00:00:00+03:00");
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/*
+  Часы замера закреплены: dbRowToTender, analyzeTender, searchRows и nonContractReason
+  читают настоящее время (давность закупки, «закрыта ли»), и фикстура от 14.10 с каждым
+  днём «старела» — тест падал с конца октября. Ленту строим уже внутри beforeAll, после
+  закрепления часов: на этапе сбора describe часы ещё настоящие.
+*/
+function pinClock(): void {
+  beforeAll(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+  });
+  afterAll(() => {
+    vi.useRealTimers();
+  });
+}
 
 /** Профиль поиска владельца в том виде, в каком он лежит в базе. */
 const searchProfile: SearchProfile = {
@@ -135,7 +151,11 @@ function natureOf(hit: SearchedRow): ProcurementNature {
 }
 
 describe("лента «Строительство и ремонт» (Бурятия + МО), замер 14.10.2026", () => {
-  const feed = buildFeed();
+  pinClock();
+  let feed: Feed;
+  beforeAll(() => {
+    feed = buildFeed();
+  });
 
   it("фикстура — все 173 найденные строки, и профиль находит их все", () => {
     expect(feed.rows).toHaveLength(173);
@@ -191,8 +211,14 @@ describe("лента «Строительство и ремонт» (Бурят�
 });
 
 describe("человек сам просит квартиры или мониторинг цен", () => {
-  const flat = buildFeed().found.find((h) => natureOf(h) === "REAL_ESTATE")!.row.tender;
-  const monitoring = buildFeed().found.find((h) => natureOf(h) === "PRICE_MONITORING")!.row.tender;
+  pinClock();
+  let flat: TenderRow["tender"];
+  let monitoring: TenderRow["tender"];
+  beforeAll(() => {
+    const { found } = buildFeed();
+    flat = found.find((h) => natureOf(h) === "REAL_ESTATE")!.row.tender;
+    monitoring = found.find((h) => natureOf(h) === "PRICE_MONITORING")!.row.tender;
+  });
 
   it("по умолчанию для подрядчика прячутся", () => {
     expect(nonContractReason(flat, { words: ["Строительство"], contractor: true })).toBe("REAL_ESTATE");

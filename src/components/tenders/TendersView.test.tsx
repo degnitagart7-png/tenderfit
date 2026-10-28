@@ -1061,4 +1061,26 @@ describe("TendersView — после быстрого старта: тур и п
     expect(screen.getByText(/Ищу ваши закупки на площадках/)).toBeTruthy();
     expect(sessionStorage.getItem("tenderfit.pendingFirstSearch")).toBeNull();
   });
+  it("пока поиск на площадках идёт, шапка говорит «ищем ещё», а профиль без слов не ругается жёстко", () => {
+    sessionStorage.setItem(
+      "tenderfit.pendingFirstSearch",
+      JSON.stringify({ jobId: "j1", startedAt: new Date().toISOString(), queries: ["кровля"], problem: null }),
+    );
+    openAt("");
+    render(<TendersView />);
+
+    expect(screen.getByText(/^Найдено \d+ · ищем ещё на площадках$/)).toBeTruthy();
+    // Слова поиска есть: «подбор не работает» после быстрого старта выглядело бы ошибкой.
+    expect(screen.queryByText(/подбор под вас не работает/)).toBeNull();
+    expect(screen.getByText(/Лента подобрана по вашему запросу\. Чтобы оценка учитывала лицензии, СРО и опыт/)).toBeTruthy();
+  });
+
+  it("без слов поиска остаётся прежний жёсткий текст про пустой профиль", () => {
+    localStorage.clear();
+    openAt("?q=компьютеров");
+    render(<TendersView />);
+
+    expect(screen.getByText(/Профиль компании не заполнен — подбор под вас не работает/)).toBeTruthy();
+    expect(screen.queryByText(/ищем ещё на площадках/)).toBeNull();
+  });
 });

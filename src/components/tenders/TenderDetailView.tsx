@@ -300,6 +300,23 @@ export function TenderDetailView({ tenderId }: { tenderId: string }) {
   const nothingAgainst = !hasBlockers && !hasUncertainties && !hasNegatives;
   const countdownText = formatTimeLeft(tender.deadlines.submissionEnd);
 
+  /*
+    Одно нажатие запускает разбор, если он ещё не шёл, и сразу открывает вкладку с
+    ходом работы. Раньше кнопка только переключала вкладку, и на ней приходилось
+    нажимать «Запустить» второй раз. Тот же обработчик у кнопки в карточке «Можно ли участвовать».
+  */
+  const startDeepAnalysis = () => {
+    setAnalysisStartSignal((n) => n + 1);
+    selectTab("analysis");
+  };
+
+  /*
+    По извещению нечего сказать ни за, ни против, а разбор документации ещё не шёл
+    (риски по нему приходят в deepRisks): две пустые карточки «ничего не найдено»
+    новичок читает как «всё хорошо», хотя условия просто лежат в файлах.
+  */
+  const nothingToJudgeYet = analysis.positiveFactors.length === 0 && nothingAgainst && deepRisks === null;
+
   const panelClass = (id: TenderTabId) => cn("space-y-4 pt-4", tab !== id && "hidden");
 
   return (
@@ -382,15 +399,10 @@ export function TenderDetailView({ tenderId }: { tenderId: string }) {
         </div>
 
         <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-4">
-          {/* Одно нажатие: запускает разбор, если он ещё не шёл, и сразу открывает
-              вкладку с ходом работы. Раньше кнопка только переключала вкладку, и на
-              ней приходилось нажимать «Запустить» второй раз. */}
+          {/* Обработчик — startDeepAnalysis (см. выше). */}
           <Button
             size="sm"
-            onClick={() => {
-              setAnalysisStartSignal((n) => n + 1);
-              selectTab("analysis");
-            }}
+            onClick={startDeepAnalysis}
             title="Запустить анализ документации или открыть результат"
           >
             <Sparkles className="h-3.5 w-3.5" aria-hidden /> Глубокий анализ
@@ -443,79 +455,94 @@ export function TenderDetailView({ tenderId }: { tenderId: string }) {
         className={panelClass("main")}
       >
         <div id="overview" className="grid scroll-mt-32 grid-cols-1 gap-4 lg:grid-cols-2">
-          <Card title="Почему подходит">
-            {analysis.positiveFactors.length === 0 ? (
-              <p className="muted">Выраженных плюсов не найдено.</p>
-            ) : (
-              <ul className="space-y-2.5">
-                {analysis.positiveFactors.map((f) => (
-                  <FindingRow
-                    key={f.id}
-                    text={f.text}
-                    evidence={findEvidence(f.evidenceId)}
-                    onShowInDocument={showInDocument}
-                  />
-                ))}
-              </ul>
-            )}
-          </Card>
-          <Card title="Почему может не подойти">
-            {nothingAgainst ? (
-              <p className="muted">Существенных ограничений не найдено.</p>
-            ) : (
-              <div className="space-y-4">
-                {hasBlockers && (
-                  <div>
-                    <h3 className="mb-2 text-[13.5px] font-semibold text-foreground">
-                      Что мешает участвовать
-                    </h3>
-                    <div className="space-y-2">
-                      {analysis.hardBlockers.map((b) => (
-                        <HardBlockerCard
-                          key={b.id}
-                          blocker={b}
-                          evidence={findEvidence(b.evidenceId)}
-                          onShowInDocument={showInDocument}
-                        />
-                      ))}
-                    </div>
-                  </div>
+          {nothingToJudgeYet ? (
+            <Card title="Можно ли участвовать" className="lg:col-span-2">
+              <p className="muted">
+                В карточке на площадке нет условий, по которым можно решить. Они в документации: требования к
+                участнику, обеспечение, аванс, срок оплаты. Глубокий анализ прочитает все файлы и ответит с
+                цитатами.
+              </p>
+              <Button size="sm" className="mt-3" onClick={startDeepAnalysis}>
+                <Sparkles className="h-3.5 w-3.5" aria-hidden /> Глубокий анализ
+              </Button>
+            </Card>
+          ) : (
+            <>
+              <Card title="Почему подходит">
+                {analysis.positiveFactors.length === 0 ? (
+                  <p className="muted">Выраженных плюсов не найдено.</p>
+                ) : (
+                  <ul className="space-y-2.5">
+                    {analysis.positiveFactors.map((f) => (
+                      <FindingRow
+                        key={f.id}
+                        text={f.text}
+                        evidence={findEvidence(f.evidenceId)}
+                        onShowInDocument={showInDocument}
+                      />
+                    ))}
+                  </ul>
                 )}
-                {hasNegatives && (
-                  <div>
-                    {(hasBlockers || hasUncertainties) && (
-                      <h3 className="mb-2 text-[13.5px] font-semibold text-foreground">Замечания</h3>
+              </Card>
+              <Card title="Почему может не подойти">
+                {nothingAgainst ? (
+                  <p className="muted">Существенных ограничений не найдено.</p>
+                ) : (
+                  <div className="space-y-4">
+                    {hasBlockers && (
+                      <div>
+                        <h3 className="mb-2 text-[13.5px] font-semibold text-foreground">
+                          Что мешает участвовать
+                        </h3>
+                        <div className="space-y-2">
+                          {analysis.hardBlockers.map((b) => (
+                            <HardBlockerCard
+                              key={b.id}
+                              blocker={b}
+                              evidence={findEvidence(b.evidenceId)}
+                              onShowInDocument={showInDocument}
+                            />
+                          ))}
+                        </div>
+                      </div>
                     )}
-                    <ul className="space-y-2.5">
-                      {analysis.negativeFactors.map((f) => (
-                        <FindingRow
-                          key={f.id}
-                          text={f.text}
-                          evidence={findEvidence(f.evidenceId)}
-                          onShowInDocument={showInDocument}
-                        />
-                      ))}
-                    </ul>
+                    {hasNegatives && (
+                      <div>
+                        {(hasBlockers || hasUncertainties) && (
+                          <h3 className="mb-2 text-[13.5px] font-semibold text-foreground">Замечания</h3>
+                        )}
+                        <ul className="space-y-2.5">
+                          {analysis.negativeFactors.map((f) => (
+                            <FindingRow
+                              key={f.id}
+                              text={f.text}
+                              evidence={findEvidence(f.evidenceId)}
+                              onShowInDocument={showInDocument}
+                            />
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {hasUncertainties && (
+                      <div>
+                        <h3 className="mb-2 text-[13.5px] font-semibold text-foreground">Что неясно</h3>
+                        <div className="space-y-2">
+                          {analysis.uncertainties.map((u) => (
+                            <UncertaintyCard
+                              key={u.id}
+                              uncertainty={u}
+                              evidence={findEvidence(u.evidenceId)}
+                              onShowInDocument={showInDocument}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
-                {hasUncertainties && (
-                  <div>
-                    <h3 className="mb-2 text-[13.5px] font-semibold text-foreground">Что неясно</h3>
-                    <div className="space-y-2">
-                      {analysis.uncertainties.map((u) => (
-                        <UncertaintyCard
-                          key={u.id}
-                          uncertainty={u}
-                          evidence={findEvidence(u.evidenceId)}
-                          onShowInDocument={showInDocument}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </Card>
+              </Card>
+            </>
+          )}
         </div>
 
         <Card title="Что делать дальше">

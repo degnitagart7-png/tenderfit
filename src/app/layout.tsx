@@ -1,6 +1,21 @@
 import type { Metadata } from "next";
 import { Agentation } from "agentation";
 import { SITE_URL } from "@/lib/site";
+/*
+  Шрифты отдаёт наш же сервер, а не Google: вся инфраструктура в России, а запрос
+  к Google Fonts из браузера посетителя то не отвечает, то блокируется, и
+  страница ждала бы шрифт впустую. Подключены файлы целиком по весам («400.css», а не
+  «cyrillic-400.css»): только в них есть unicode-range, и браузер скачивает нужную часть —
+  кириллицу, латиницу или знак ₽ из latin-ext, — а не всё сразу. Inter — UI и заголовки, JetBrains Mono — данные.
+  Если файл не загрузился, срабатывают фолбэки из tailwind.config.ts.
+*/
+import "@fontsource/inter/400.css";
+import "@fontsource/inter/500.css";
+import "@fontsource/inter/600.css";
+import "@fontsource/inter/700.css";
+import "@fontsource/jetbrains-mono/400.css";
+import "@fontsource/jetbrains-mono/500.css";
+import "@fontsource/jetbrains-mono/600.css";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -35,20 +50,6 @@ export default function RootLayout({
        rgb(var(--background)). Инлайновое значение здесь уже расходилось с
        токеном на два пункта, и разница была видна при overscroll-подтяжке. */
     <html lang="ru">
-      <head>
-        {/*
-          Шрифты подключаются ссылкой, а не next/font, чтобы сборка не падала
-          без сети; в офлайне срабатывают фолбэки из tailwind.config.ts.
-          Inter — UI и заголовки, JetBrains Mono — данные.
-        */}
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-        {/* eslint-disable-next-line @next/next/no-page-custom-font */}
-        <link
-          href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
-          rel="stylesheet"
-        />
-      </head>
       <body>
         {children}
         {/* Панель пометок для разработки: клик по элементу на странице даёт

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { TenderDetailView } from "@/components/tenders/TenderDetailView";
 import { demoTenders } from "@/mocks/tenders";
 import { tenderApiService } from "@/services/tenderApiService";
@@ -81,7 +81,8 @@ describe("TenderDetailView — шапка", () => {
   it("кнопка «Глубокий анализ» открывает вкладку анализа", async () => {
     await openCard();
 
-    fireEvent.click(screen.getByRole("button", { name: /Глубокий анализ/ }));
+    // Кнопка в шапке первая; в карточке без находок есть ещё одна такая же.
+    fireEvent.click(screen.getAllByRole("button", { name: /Глубокий анализ/ })[0]!);
 
     expect(tabButton("Анализ документов").getAttribute("aria-selected")).toBe("true");
     expect(window.location.search).toBe("?tab=analysis");
@@ -239,6 +240,48 @@ describe("TenderDetailView — тексты без внутренних терм
     expect(card.textContent).toContain("Нет допуска СРО");
     expect(card.textContent).toContain("Что неясно");
     expect(card.textContent).toContain("Какой срок гарантии?");
+  });
+
+  /** Закупка, по извещению которой нечего сказать ни за, ни против. */
+  async function mockEmptyFindings(): Promise<void> {
+    // Демо-закупка — источник MOCK, у него глубокий анализ недоступен; берём ЕИС.
+    const tender = { ...demoTenders[0]!, dataSource: "EIS" as const };
+    const analysis = await mockTenderAnalysisProvider.analyze(tender, companyProfileRepository.get());
+    vi.mocked(tenderApiService.getRowById).mockResolvedValue({
+      tender,
+      analysis: { ...analysis, positiveFactors: [], hardBlockers: [], uncertainties: [], negativeFactors: [] } as never,
+      pipelineStatus: "NEW",
+    });
+  }
+
+  it("до глубокого анализа две пустые карточки заменены одной «Можно ли участвовать» с кнопкой", async () => {
+    await mockEmptyFindings();
+    await openCard();
+
+    expect(screen.queryByText("Выраженных плюсов не найдено.")).toBeNull();
+    expect(screen.queryByText("Существенных ограничений не найдено.")).toBeNull();
+    const card = screen.getByRole("heading", { name: "Можно ли участвовать" }).closest("section")!;
+    expect(card.textContent).toContain("В карточке на площадке нет условий, по которым можно решить.");
+
+    // Кнопка в карточке — тот же запуск, что и в шапке: открывает вкладку анализа.
+    fireEvent.click(within(card).getByRole("button", { name: /Глубокий анализ/ }));
+    expect(tabButton("Анализ документов").getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("после глубокого анализа остаются две карточки, даже если обе пусты", async () => {
+    // clearAllMocks реализацию не сбрасывает, а соседним тестам нужен «разбор не запускался».
+    vi.mocked(deepAnalysisService.getStatus).mockResolvedValueOnce({
+      jobs: [{ id: "j1", status: "completed", updated_at: "2026-10-01T00:00:00Z" }],
+      verdictHistory: [],
+      documents: [],
+      documentAnalyses: [],
+    } as never);
+    await mockEmptyFindings();
+    await openCard();
+
+    expect(await screen.findByText("Выраженных плюсов не найдено.")).toBeTruthy();
+    expect(screen.getByText("Существенных ограничений не найдено.")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Можно ли участвовать" })).toBeNull();
   });
 
   it("«Деньги и сроки» на «Главном» называют обеспечение, аванс, оплату и срок исполнения", async () => {

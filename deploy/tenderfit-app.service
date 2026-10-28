@@ -24,7 +24,9 @@ User=tenderfit
 Group=tenderfit
 WorkingDirectory=/opt/tenderfit-ai
 EnvironmentFile=/etc/tenderfit/app.env
-ExecStart=/usr/bin/npm run start
+# Адрес — флагом -H, а не HOSTNAME из app.env: `next start` (Next 14) переменную
+# не читает и слушал *:3000, порт был открыт из интернета в обход nginx (28.10.2026).
+ExecStart=/usr/bin/npm run start -- -H 127.0.0.1
 
 # Перезапуск всегда: падение приложения означает недоступный сайт, и ждать
 # ручного вмешательства здесь нечего.
